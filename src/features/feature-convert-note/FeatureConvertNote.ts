@@ -1,18 +1,16 @@
 import MeldEncrypt from "../../main.ts";
-import { t } from "../../i18n";
+import { t, tSshKeyError } from "../../i18n";
 import { IMeldEncryptPluginSettings } from "../../settings/MeldEncryptPluginSettings.ts";
 import { IMeldEncryptPluginFeature } from "../IMeldEncryptPluginFeature.ts";
-import { Notice, TFile, TextFileView } from "obsidian";
-import PluginPasswordModal from "../../PluginPasswordModal.ts";
-import { PasswordAndHint, SessionPasswordService } from "../../services/SessionPasswordService.ts";
-import { JsonFileEncoding } from "../../services/FileDataHelper.ts";
+import { Notice, TFile } from "obsidian";
 import { ENCRYPTED_FILE_EXTENSIONS, ENCRYPTED_FILE_EXTENSION_DEFAULT } from "../../services/Constants.ts";
 import { FileEncryptHelper } from "../../services/FileEncryptHelper.ts";
+import { SshKeyService } from "../../services/SshKeyService.ts";
 
 export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
-	
+
 	plugin: MeldEncrypt;
-	
+
 	async onload(plugin: MeldEncrypt, settings: IMeldEncryptPluginSettings) {
 		this.plugin = plugin;
 
@@ -49,7 +47,7 @@ export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
 		);
 
 	}
-	
+
 	onunload(): void { }
 
 	buildSettingsUi(containerEl: HTMLElement, saveSettingCallback: () => Promise<void>): void { }
@@ -69,7 +67,7 @@ export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
 	}
 
 	private processCommandEncryptNote( file:TFile ){
-		this.getPasswordAndEncryptFile( file ).catch( reason => {
+		this.encryptFile( file ).catch( reason => {
 			if (reason){
 				new Notice(reason, 10000);
 			}
@@ -77,7 +75,7 @@ export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
 	}
 
 	private processCommandDecryptNote( file:TFile ){
-		this.getPasswordAndDecryptFile( file ).catch( reason => {
+		this.decryptFile( file ).catch( reason => {
 			if (reason){
 				new Notice(reason, 10000);
 			}
@@ -86,7 +84,7 @@ export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
 
 	private processCommandConvertActiveNote( checking: boolean ) : boolean | void {
 		const file = this.plugin.app.workspace.getActiveFile();
-		
+
 		if (checking){
 			return this.checkCanEncryptFile(file)
 				|| this.checkCanDecryptFile(file)
@@ -94,7 +92,7 @@ export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
 		}
 
 		if ( file?.extension == 'md' ){
-			this.getPasswordAndEncryptFile( file ).catch( reason => {
+			this.encryptFile( file ).catch( reason => {
 				if (reason){
 					new Notice(reason, 10000);
 				}
@@ -102,7 +100,7 @@ export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
 		}
 
 		if ( file && ENCRYPTED_FILE_EXTENSIONS.contains( file.extension ) ){
-			this.getPasswordAndDecryptFile( file ).catch( reason => {
+			this.decryptFile( file ).catch( reason => {
 				if (reason){
 					new Notice(reason, 10000);
 				}
@@ -110,89 +108,61 @@ export default class FeatureConvertNote implements IMeldEncryptPluginFeature {
 		}
 	}
 
-	private async getPasswordAndEncryptFile( file:TFile ) {
+	private async encryptFile( file:TFile ) {
 
 		if ( !this.checkCanEncryptFile(file) ) {
 			throw new Error( t("error.unableToEncryptFile") );
 		}
 
+		if ( !(await SshKeyService.isAvailable()) ){
+			new Notice( tSshKeyError(SshKeyService.lastErrorMessage), 10000 );
+			return;
+		}
+
 		try{
+			const encryptedFileContent = await FileEncryptHelper.encryptFile(this.plugin, file);
 
-			// try to get password from session password service
-			let password = await SessionPasswordService.getByFile( file );
-
-			if ( password.password == '' ){
-				// ask for password
-				const pm = new PluginPasswordModal(
-					this.plugin.app,
-					t("modal.encryptNoteTitle"),
-					true,
-					this.plugin.pluginSettings.confirmPassword,
-					password
-				);
-				password = await pm.openAsync();
-			}
-
-			const encryptedFileContent = await FileEncryptHelper.encryptFile(this.plugin, file, password);
-
-			await FileEncryptHelper.closeUpdateRememberPasswordThenReopen(
+			await FileEncryptHelper.closeUpdateThenReopen(
 				this.plugin,
 				file,
 				ENCRYPTED_FILE_EXTENSION_DEFAULT,
-				encryptedFileContent,
-				password
+				encryptedFileContent
 			);
-			
+
 			new Notice( t("notice.noteEncrypted") );
 
 		}catch( error ){
-			if (error){
-				new Notice(error, 10000);
-			}
+			console.error('vault-encrypt: unable to encrypt file', error);
+			new Notice( t("error.encryptionFailed"), 10000 );
 		}
 	}
 
-	private async getPasswordAndDecryptFile( file:TFile ) {
+	private async decryptFile( file:TFile ) {
 		if ( !this.checkCanDecryptFile(file) ) {
 			throw new Error( t("error.unableToDecryptFile") );
 		}
 
-		let passwordAndHint = await SessionPasswordService.getByFile( file );
-		if ( passwordAndHint.password != '' ){
-			// try to decrypt using saved password
-			const decryptedContent = await FileEncryptHelper.decryptFile( this.plugin, file, passwordAndHint.password );
-			if (decryptedContent != null){
-				// update file
-				await FileEncryptHelper.closeUpdateRememberPasswordThenReopen( this.plugin, file, 'md', decryptedContent, passwordAndHint, false );
-				return;
-			}
+		if ( !(await SshKeyService.isAvailable()) ){
+			new Notice( tSshKeyError(SshKeyService.lastErrorMessage), 10000 );
+			return;
 		}
-		
-		// fetch from user
-		const encryptedFileContent = await this.plugin.app.vault.read( file );
-		const encryptedData = JsonFileEncoding.decode( encryptedFileContent );
 
-
-		const pwm = new PluginPasswordModal(this.plugin.app, t("modal.decryptNoteTitle"), false, false, { password: '', hint: encryptedData.hint } );
 		try{
-			passwordAndHint = await pwm.openAsync();
-			
-			if (!pwm.resultConfirmed){
-				return;
-			}
-			
-			const content = await FileEncryptHelper.decryptFile( this.plugin, file, passwordAndHint.password );
+			const content = await FileEncryptHelper.decryptFile( this.plugin, file );
 			if ( content == null ){
 				throw new Error(t("error.decryptionFailed"));
 			}
 
-			await FileEncryptHelper.closeUpdateRememberPasswordThenReopen( this.plugin, file, 'md', content, passwordAndHint, false );
+			await FileEncryptHelper.closeUpdateThenReopen( this.plugin, file, 'md', content );
 
 			new Notice( t("notice.noteDecrypted") );
 
 		}catch(error){
-			if (error){
-				new Notice(error, 10000);
+			if (error instanceof Error && error.message){
+				new Notice(error.message, 10000);
+			}else{
+				console.error('vault-encrypt: unable to decrypt file', error);
+				new Notice( t("error.decryptionFailed"), 10000 );
 			}
 		}
 	}

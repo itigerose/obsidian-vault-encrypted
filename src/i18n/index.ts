@@ -6,11 +6,9 @@ const locale = moment.locale();
 const translations: Record<string, Record<string, string>> = {
 	"en": {
 		// --- Commands / ribbon / context menu ---
-		"command.clearPasswordCache": "Clear Session Password Cache",
 		"command.encryptSelection": "Encrypt Selection",
 		"command.decrypt": "Decrypt",
 		"command.createNewEncryptedNote": "Create new encrypted note",
-		"command.lockAndCloseAll": "Lock and Close all open encrypted notes",
 		"command.convert": "Convert to or from an Encrypted note",
 		"command.generatePassword": "Generate Random Password",
 		"ribbon.generatePassword": "Generate Random Password",
@@ -26,12 +24,10 @@ const translations: Record<string, Record<string, string>> = {
 		"command.folderEncrypt": "Encrypt folder of current note",
 		"command.folderDecrypt": "Decrypt folder of current note",
 		"command.toggleMarkFolder": "Mark or unmark folder of current note",
+		"command.reloadSshKey": "Reload SSH key",
 		"menu.newEncryptedNote": "New encrypted note",
-		"action.changePassword": "Change Password",
-		"action.lockAndClose": "Lock & Close",
 
 		// --- Notices ---
-		"notice.itemsCleared": "Items cleared: {{count}}",
 		"notice.decryptionFailed": "❌ Decryption failed!",
 		"notice.encryptionFailed": "❌ Encryption failed!",
 		"notice.pleaseSelectTextToEncrypt": "Please select text to encrypt.",
@@ -50,22 +46,13 @@ const translations: Record<string, Record<string, string>> = {
 		"notice.folderUnmarked": "🔓 Removed the encrypted-folder mark from \"{{path}}\" (existing files were left untouched)",
 		"notice.autoEncrypted": "🔐 Auto-encrypted \"{{name}}\"",
 		"notice.autoEncryptFailed": "❌ Unable to auto-encrypt \"{{name}}\"",
-		"notice.autoEncryptSkipped": "⚠️ \"{{name}}\" was left unencrypted because no password was given",
-		"notice.passwordRequired": "Please enter a password.",
-		"notice.externalPasswordFileNotFound": "External password file not found",
-		"notice.passwordChanged": "Password changed",
-		"notice.passwordWasntChanged": "Password wasn't changed",
+		"notice.sshKeyReloaded": "🔑 SSH key loaded from {{source}}",
 
 		// --- Settings ---
-		"settings.confirmPassword.name": "Confirm password?",
-		"settings.confirmPassword.desc": "Confirm password when encrypting. (Recommended)",
-		"settings.rememberPassword.name": "Remember password?",
-		"settings.rememberPassword.desc": "Remember the last used passwords when encrypting or decrypting.  Passwords are remembered until they timeout or Obsidian is closed",
-		"settings.rememberPasswordTimeout.name": "Remember Password ({{timeout}})",
-		"settings.rememberPasswordTimeout.untilClosed": "Until Obsidian is closed",
-		"settings.rememberPasswordTimeout.forMinutes": "For {{minutes}} minutes",
-		"settings.rememberPasswordTimeout.desc": "The number of minutes to remember passwords.",
 		"settings.inPlace.heading": "Inline encryption",
+		"settings.sshKey.name": "SSH key (Ed25519)",
+		"settings.sshKey.loadedDesc": "Loaded from {{source}}",
+		"settings.sshKey.reload": "Reload",
 		"settings.inPlace.expandToWholeLine.name": "Expand selection to whole line?",
 		"settings.inPlace.expandToWholeLine.desc": "Partial selections will get expanded to the whole line.",
 		"settings.inPlace.searchLimit.name": "Search limit for markers",
@@ -87,25 +74,6 @@ const translations: Record<string, Record<string, string>> = {
 
 		// --- Dropdown option labels ---
 		// --- Modal ---
-		"modal.passwordTitleEncrypting": "Encrypting",
-		"modal.passwordTitleDecrypting": "Decrypting",
-		"modal.password": "Password:",
-		"modal.passwordFieldPlaceholder": "Enter password",
-		"modal.confirmPassword": "Confirm Password:",
-		"modal.confirmPasswordFieldPlaceholder": "Re-enter password",
-		"modal.passwordHintPlaceholder": "{{hint}}",
-		"modal.optionalPasswordHint": "Optional Password Hint",
-		"modal.passwordHintFieldPlaceholder": "Password Hint",
-		"modal.textToEncrypt": "Text to encrypt",
-		"modal.visibleText": "Visible text (shown after encryption)",
-		"modal.visibleTextPlaceholder": "e.g. Bank card password (blank shows \"encrypted\")",
-		"modal.confirm": "Confirm",
-		"modal.passwordsDontMatch": "Passwords don't match",
-		"modal.decryptingTitle": "Decrypting \"{{name}}\"",
-		"modal.changePasswordTitle": "Change password for \"{{name}}\"",
-		"modal.encryptPasswordPrompt": "Please provide a password for encryption",
-		"modal.encryptNoteTitle": "Encrypt Note",
-		"modal.decryptNoteTitle": "Decrypt Note",
 		"modal.save": "Modify",
 		"modal.copy": "Copy",
 		"modal.decryptInPlace": "Decrypt inline",
@@ -128,6 +96,7 @@ const translations: Record<string, Record<string, string>> = {
 
 		"modal.folderEncrypt.titleEncrypt": "Encrypt folder",
 		"modal.folderEncrypt.titleDecrypt": "Decrypt folder",
+		"modal.folderEncrypt.sshKeyNote": "All notes are encrypted with your local SSH key (~/.ssh/id_ed25519). No password is required.",
 		"modal.folderEncrypt.folder": "Folder path",
 		"modal.folderEncrypt.folderDesc": "Path of the folder to process. Defaults to the folder of the current note.",
 		"modal.folderEncrypt.folderPlaceholder": "e.g. 03-Secret/Notes",
@@ -138,37 +107,34 @@ const translations: Record<string, Record<string, string>> = {
 		"modal.folderEncrypt.summary": "Succeeded: {{succeeded}}, Skipped: {{skipped}}, Failed: {{failed}}",
 		"modal.folderEncrypt.failedListTitle": "Failed files",
 		"modal.folderEncrypt.done": "Done",
-		"modal.folderEncrypt.passwordDescEncrypt": "All notes in this folder share this password.",
-		"modal.folderEncrypt.passwordDescDecrypt": "Enter the password used when encrypting.",
-		"modal.folderEncrypt.passwordRequired": "Password is required.",
 
 		// --- Mark folder as encrypted ---
 		"modal.markFolder.title": "Mark folder as encrypted",
 		"modal.markFolder.desc": "New .md notes created or moved into this folder are encrypted automatically.",
-		"modal.markFolder.descNoPasswordStored": "The password is only kept for this session — it is never written to disk.",
 		"modal.markFolder.folder": "Folder path",
 		"modal.markFolder.folderDesc": "Path of the folder to mark.",
 		"modal.markFolder.encryptExisting": "Encrypt existing notes now",
 		"modal.markFolder.encryptExistingDesc": "Encrypt the .md notes that are already in this folder using the password above.",
 		"modal.markFolder.confirm": "Mark folder",
-		"modal.autoEncryptPassword.title": "Password for encrypted folder",
-		"modal.unlockFolder.title": "Password to unlock folder",
-		"notice.folderPasswordWrong": "❌ Wrong password — it does not match the encrypted files already in this folder",
-		"notice.folderAutoLockOnTimeout": "🔒 Encrypted folder re-locked — the remembered password timed out",
 
 		// --- Errors ---
 		"error.unableToEncryptFile": "Unable to encrypt file",
 		"error.unableToDecryptFile": "Unable to decrypt file",
 		"error.decryptionFailed": "Decryption failed",
+		"error.encryptionFailed": "Encryption failed",
+		"error.sshKeyUnavailable": "❌ SSH key unavailable — expected an unencrypted Ed25519 private key at ~/.ssh/id_ed25519 (desktop only)",
+		"error.sshKey.not-found": "❌ SSH key not found — expected ~/.ssh/id_ed25519",
+		"error.sshKey.no-node": "❌ SSH key mode requires the Obsidian desktop app",
+		"error.sshKey.read-failed": "❌ Unable to read ~/.ssh/id_ed25519",
+		"error.sshKey.invalid format": "❌ ~/.ssh/id_ed25519 is not a valid unencrypted OpenSSH Ed25519 private key",
+		"error.sshKey.passphrase-protected": "❌ ~/.ssh/id_ed25519 is passphrase-protected — remove the passphrase or use a key without one",
 	},
 
 	"zh-cn": {
 		// --- Commands / ribbon / context menu ---
-		"command.clearPasswordCache": "清除会话密码缓存",
 		"command.encryptSelection": "加密选中内容",
 		"command.decrypt": "解密",
 		"command.createNewEncryptedNote": "新建加密笔记",
-		"command.lockAndCloseAll": "锁定并关闭所有已打开的加密笔记",
 		"command.convert": "转换为加密笔记或反向转换",
 		"command.generatePassword": "生成随机密码",
 		"ribbon.generatePassword": "生成随机密码",
@@ -184,12 +150,10 @@ const translations: Record<string, Record<string, string>> = {
 		"command.folderEncrypt": "加密当前笔记所在文件夹",
 		"command.folderDecrypt": "解密当前笔记所在文件夹",
 		"command.toggleMarkFolder": "标记或取消标记当前笔记所在文件夹",
+		"command.reloadSshKey": "重新加载 SSH 密钥",
 		"menu.newEncryptedNote": "新建加密笔记",
-		"action.changePassword": "修改密码",
-		"action.lockAndClose": "锁定并关闭",
 
 		// --- Notices ---
-		"notice.itemsCleared": "已清除项目：{{count}}",
 		"notice.decryptionFailed": "❌ 解密失败！",
 		"notice.encryptionFailed": "❌ 加密失败！",
 		"notice.pleaseSelectTextToEncrypt": "请选择要加密的文本。",
@@ -208,22 +172,13 @@ const translations: Record<string, Record<string, string>> = {
 		"notice.folderUnmarked": "🔓 已取消“{{path}}”的加密文件夹标记（不影响已有文件）",
 		"notice.autoEncrypted": "🔐 已自动加密“{{name}}”",
 		"notice.autoEncryptFailed": "❌ 自动加密“{{name}}”失败",
-		"notice.autoEncryptSkipped": "⚠️ 未提供密码，“{{name}}”保持明文",
-		"notice.passwordRequired": "请输入密码。",
-		"notice.externalPasswordFileNotFound": "未找到外部密码文件",
-		"notice.passwordChanged": "密码已修改",
-		"notice.passwordWasntChanged": "密码未修改",
+		"notice.sshKeyReloaded": "🔑 已从 {{source}} 加载 SSH 密钥",
 
 		// --- Settings ---
-		"settings.confirmPassword.name": "确认密码？",
-		"settings.confirmPassword.desc": "加密时确认密码。（推荐）",
-		"settings.rememberPassword.name": "记住密码？",
-		"settings.rememberPassword.desc": "在加密或解密时记住最近使用的密码。密码会一直保留，直到超时或 Obsidian 关闭。",
-		"settings.rememberPasswordTimeout.name": "记住密码（{{timeout}}）",
-		"settings.rememberPasswordTimeout.untilClosed": "直到 Obsidian 关闭",
-		"settings.rememberPasswordTimeout.forMinutes": "{{minutes}} 分钟",
-		"settings.rememberPasswordTimeout.desc": "记住密码的分钟数。",
 		"settings.inPlace.heading": "行内加密",
+		"settings.sshKey.name": "SSH 密钥（Ed25519）",
+		"settings.sshKey.loadedDesc": "已从 {{source}} 加载",
+		"settings.sshKey.reload": "重新加载",
 		"settings.inPlace.expandToWholeLine.name": "将选区扩展到整行？",
 		"settings.inPlace.expandToWholeLine.desc": "部分选区将扩展到整行。",
 		"settings.inPlace.searchLimit.name": "标记搜索范围",
@@ -245,25 +200,6 @@ const translations: Record<string, Record<string, string>> = {
 
 		// --- Dropdown option labels ---
 		// --- Modal ---
-		"modal.passwordTitleEncrypting": "正在加密",
-		"modal.passwordTitleDecrypting": "正在解密",
-		"modal.password": "密码：",
-		"modal.passwordFieldPlaceholder": "请输入密码",
-		"modal.confirmPassword": "确认密码：",
-		"modal.confirmPasswordFieldPlaceholder": "请再次输入密码",
-		"modal.passwordHintPlaceholder": "{{hint}}",
-		"modal.optionalPasswordHint": "可选的密码提示",
-		"modal.passwordHintFieldPlaceholder": "密码提示",
-		"modal.textToEncrypt": "要加密的文本",
-		"modal.visibleText": "显示文本（加密后可见的提示）",
-		"modal.visibleTextPlaceholder": "例如：银行卡密码（留空则显示“加密内容”）",
-		"modal.confirm": "确认",
-		"modal.passwordsDontMatch": "密码不匹配",
-		"modal.decryptingTitle": "正在解密“{{name}}”",
-		"modal.changePasswordTitle": "修改“{{name}}”的密码",
-		"modal.encryptPasswordPrompt": "请提供用于加密的密码",
-		"modal.encryptNoteTitle": "加密笔记",
-		"modal.decryptNoteTitle": "解密笔记",
 		"modal.save": "修改",
 		"modal.copy": "复制",
 		"modal.decryptInPlace": "行内解密",
@@ -286,6 +222,7 @@ const translations: Record<string, Record<string, string>> = {
 
 		"modal.folderEncrypt.titleEncrypt": "加密文件夹",
 		"modal.folderEncrypt.titleDecrypt": "解密文件夹",
+		"modal.folderEncrypt.sshKeyNote": "所有笔记都将使用本地 SSH 密钥（~/.ssh/id_ed25519）加密，无需输入密码。",
 		"modal.folderEncrypt.folder": "文件夹路径",
 		"modal.folderEncrypt.folderDesc": "要处理的文件夹路径。默认当前笔记所在文件夹。",
 		"modal.folderEncrypt.folderPlaceholder": "例如 03-Secret/Notes",
@@ -296,28 +233,27 @@ const translations: Record<string, Record<string, string>> = {
 		"modal.folderEncrypt.summary": "成功：{{succeeded}}，跳过：{{skipped}}，失败：{{failed}}",
 		"modal.folderEncrypt.failedListTitle": "失败的文件",
 		"modal.folderEncrypt.done": "完成",
-		"modal.folderEncrypt.passwordDescEncrypt": "该文件夹内所有笔记统一使用此密码。",
-		"modal.folderEncrypt.passwordDescDecrypt": "输入加密时设置的密码。",
-		"modal.folderEncrypt.passwordRequired": "密码不能为空。",
 
 		// --- 标记为加密文件夹 ---
 		"modal.markFolder.title": "标记为加密文件夹",
 		"modal.markFolder.desc": "在此文件夹内新建或移入的 .md 笔记都会自动加密。",
-		"modal.markFolder.descNoPasswordStored": "密码仅在当前会话中保存，不会写入磁盘。",
 		"modal.markFolder.folder": "文件夹路径",
 		"modal.markFolder.folderDesc": "要标记的文件夹路径。",
 		"modal.markFolder.encryptExisting": "同时加密现有笔记",
 		"modal.markFolder.encryptExistingDesc": "使用上方密码加密此文件夹中已有的 .md 笔记。",
 		"modal.markFolder.confirm": "标记文件夹",
-		"modal.autoEncryptPassword.title": "加密文件夹的密码",
-		"modal.unlockFolder.title": "输入密码解锁文件夹",
-		"notice.folderPasswordWrong": "❌ 密码错误：与文件夹内已有加密文件的密码不一致",
-		"notice.folderAutoLockOnTimeout": "🔒 加密文件夹已重新锁定：记住的密码已超时",
 
 		// --- Errors ---
 		"error.unableToEncryptFile": "无法加密文件",
 		"error.unableToDecryptFile": "无法解密文件",
 		"error.decryptionFailed": "解密失败",
+		"error.encryptionFailed": "加密失败",
+		"error.sshKeyUnavailable": "❌ SSH 密钥不可用 —— 需要 ~/.ssh/id_ed25519 下的无口令 Ed25519 私钥（仅桌面端）",
+		"error.sshKey.not-found": "❌ 未找到 SSH 密钥 —— 期望 ~/.ssh/id_ed25519",
+		"error.sshKey.no-node": "❌ SSH 密钥模式仅支持 Obsidian 桌面版",
+		"error.sshKey.read-failed": "❌ 无法读取 ~/.ssh/id_ed25519",
+		"error.sshKey.invalid format": "❌ ~/.ssh/id_ed25519 不是有效的无口令 OpenSSH Ed25519 私钥",
+		"error.sshKey.passphrase-protected": "❌ ~/.ssh/id_ed25519 设置了口令保护 —— 请去掉口令或改用无口令密钥",
 	},
 };
 
@@ -331,4 +267,16 @@ export function t(key: string, params?: Record<string, string>): string {
 		}
 	}
 	return text;
+}
+
+/**
+ * Translate an SshKeyService error token (e.g. "not-found") into a
+ * user-facing message. Empty / unknown tokens fall back to the generic
+ * "SSH key unavailable" message.
+ */
+export function tSshKeyError(token: string): string {
+	if (!token) {
+		return t("error.sshKeyUnavailable");
+	}
+	return t(`error.sshKey.${token}`);
 }

@@ -1,21 +1,20 @@
-import { App, Modal, Notice, Setting, TextComponent, TFolder } from "obsidian";
+import { App, Modal, Notice, Setting, TFolder } from "obsidian";
 import MeldEncrypt from "../../main.ts";
-import { t } from "../../i18n";
-import { PasswordAndHint, SessionPasswordService } from "../../services/SessionPasswordService.ts";
-import { UiHelper } from "../../services/UiHelper.ts";
+import { t, tSshKeyError } from "../../i18n";
 import { FolderBulkService, IFolderBulkResult } from "./FolderBulkService.ts";
 import { FolderMarkService } from "./FolderMarkService.ts";
 import { EncryptedIconService } from "../../services/EncryptedIconService.ts";
+import { SshKeyService } from "../../services/SshKeyService.ts";
 
 export type FolderEncryptMode = "encrypt" | "decrypt";
 
-const ERROR_DESC_CLASS = "ve-setting-desc-error";
-
 /**
- * Modal that lets the user pick a folder, toggle recursion and enter the
- * password in a single dialog, then runs the bulk operation.
+ * Modal that lets the user confirm a folder bulk operation, then runs it.
  * The mode (encrypt / decrypt) is decided by the menu entry that opened
  * this modal — there is no in-dialog mode switch.
+ *
+ * Since v3 encryption is keyed with the local OpenSSH Ed25519 key, so there
+ * is no password input — only a folder summary and a run button.
  */
 export class FolderEncryptModal extends Modal {
 
@@ -24,11 +23,6 @@ export class FolderEncryptModal extends Modal {
 	private recursive: boolean;
 	private running = false;
 	private readonly plugin: MeldEncrypt;
-
-	// password form state
-	private password = "";
-	private confirmPass = "";
-	private hint = "";
 
 	constructor(app: App, plugin: MeldEncrypt, folderPath: string, mode: FolderEncryptMode) {
 		super(app);
@@ -43,7 +37,6 @@ export class FolderEncryptModal extends Modal {
 		contentEl.empty();
 
 		const isEncrypt = this.mode === "encrypt";
-		const showConfirm = isEncrypt && this.plugin.pluginSettings.confirmPassword;
 
 		contentEl.createEl("h2", { text: t(isEncrypt ? "modal.folderEncrypt.titleEncrypt" : "modal.folderEncrypt.titleDecrypt") });
 
@@ -53,182 +46,39 @@ export class FolderEncryptModal extends Modal {
 			cls: "ve-folder-path-text"
 		});
 
+		contentEl.createEl("p", { text: t("modal.folderEncrypt.sshKeyNote"), cls: "ve-folder-path-text" });
+
 		// Recursion is driven by the plugin setting
 		// (settings.folderEncrypt.recursive) — see FeatureFolderEncrypt.
-		// No in-dialog toggle here on purpose.
-
-		/* ===== Password section (merged from PluginPasswordModal) ===== */
-
-		const focusTextOf = (setting: Setting) => {
-			const elInp = setting.components.find(bc => bc instanceof TextComponent);
-			if (elInp instanceof TextComponent) {
-				elInp.inputEl.focus();
-			}
-		};
-
-		// Main password row
-		const sPassword = UiHelper.buildPasswordSetting({
-			container: contentEl,
-			tabIndex: 0,
-			name: t("modal.password"),
-			desc: t(isEncrypt ? "modal.folderEncrypt.passwordDescEncrypt" : "modal.folderEncrypt.passwordDescDecrypt"),
-			placeholder: t("modal.passwordFieldPlaceholder"),
-			autoFocus: true,
-			onChangeCallback: (value) => {
-				this.password = value;
-				this.clearError(sPassword, t(isEncrypt
-					? "modal.folderEncrypt.passwordDescEncrypt"
-					: "modal.folderEncrypt.passwordDescDecrypt"));
-			},
-			onEnterCallback: (value) => {
-				this.password = value;
-				if (showConfirm) {
-					focusTextOf(sConfirmPassword);
-				} else if (isEncrypt) {
-					focusTextOf(sHint);
-				} else {
-					void this.run(sPassword, sConfirmPassword);
-				}
-			}
-		});
-
-		// Confirm password row (encrypt only, when confirmPassword setting is on)
-		const sConfirmPassword = UiHelper.buildPasswordSetting({
-			container: contentEl,
-			tabIndex: 1,
-			name: t("modal.confirmPassword"),
-			placeholder: t("modal.confirmPasswordFieldPlaceholder"),
-			onChangeCallback: (value) => {
-				this.confirmPass = value;
-				this.clearError(sConfirmPassword, "");
-			},
-			onEnterCallback: (value) => {
-				this.confirmPass = value;
-				if (this.password.length > 0 && this.password === this.confirmPass) {
-					focusTextOf(sHint);
-				}
-			}
-		});
-		if (!showConfirm) {
-			sConfirmPassword.settingEl.hide();
-		}
-
-		// Hint row: editable when encrypting, read-only when decrypting
-		const sHint = new Setting(contentEl)
-			.setName(t("modal.optionalPasswordHint"))
-			.addText(tc => {
-				tc.inputEl.placeholder = t("modal.passwordHintFieldPlaceholder");
-				tc.inputEl.tabIndex = 2;
-				tc.setValue(this.hint);
-				if (!isEncrypt) {
-					tc.setDisabled(true);
-					tc.inputEl.setAttr("readonly", true);
-				}
-				tc.onChange(v => this.hint = v);
-				tc.inputEl.on("keypress", "*", (ev, target) => {
-					if (
-						ev.key === "Enter"
-						&& target instanceof HTMLInputElement
-					) {
-						ev.preventDefault();
-						void this.run(sPassword, sConfirmPassword);
-					}
-				});
-			});
-		if (!isEncrypt) {
-			// Decrypt: only show if there is a hint to display
-			sHint.settingEl.hide();
-		}
-
-		/* ===== End password section ===== */
 
 		// Run / Cancel buttons
 		new Setting(contentEl)
 			.addButton(button => button
 				.setButtonText(t("modal.folderEncrypt.run"))
 				.setCta()
-				.onClick(() => void this.run(sPassword, sConfirmPassword))
+				.onClick(() => void this.run())
 			)
 			.addButton(button => button
 				.setButtonText(t("modal.folderEncrypt.cancel"))
 				.onClick(() => this.close())
 			);
-
-		// Prefill from the session password cache (if any) so the user can
-		// just hit Run without re-typing. Done async after the form is up.
-		void this.prefillSessionPassword(sPassword, sHint, isEncrypt);
 	}
 
 	onClose(): void {
 		this.contentEl.empty();
 	}
 
-	private async prefillSessionPassword(sPassword: Setting, sHint: Setting, isEncrypt: boolean): Promise<void> {
-		const files = this.collectFiles();
-		if (files == null || files.length === 0) {
-			return;
-		}
-
-		// Prefer the persisted folder mark hint; fall back to session cache.
-		const folderMark = FolderMarkService.getMark(this.folderPath);
-		const folderHint = folderMark?.hint ?? "";
-		if (folderHint !== "") {
-			this.hint = folderHint;
-		}
-
-		const cached: PasswordAndHint = await SessionPasswordService.getByFile(files[0]);
-		if (cached.password === "") {
-			// Decrypt mode: surface the stored hint as the input placeholder.
-			if (!isEncrypt && this.hint !== "") {
-				const tc = sPassword.components.find(bc => bc instanceof TextComponent);
-				if (tc instanceof TextComponent) {
-					tc.setPlaceholder(t("modal.passwordHintPlaceholder", { hint: this.hint }));
-				}
-			}
-			return;
-		}
-		this.password = cached.password;
-		// Session cache may carry a more recently used hint.
-		if (cached.hint !== "") {
-			this.hint = cached.hint;
-		}
-		const pwdTc = sPassword.components.find(bc => bc instanceof TextComponent);
-		if (pwdTc instanceof TextComponent) {
-			pwdTc.setValue(cached.password);
-		}
-		const hintTc = sHint.components.find(bc => bc instanceof TextComponent);
-		if (hintTc instanceof TextComponent) {
-			hintTc.setValue(this.hint);
-		}
-	}
-
-	private showError(setting: Setting, message: string): void {
-		setting.setDesc(message);
-		setting.descEl.addClass(ERROR_DESC_CLASS);
-	}
-
-	private clearError(setting: Setting, defaultDesc: string): void {
-		setting.setDesc(defaultDesc);
-		setting.descEl.removeClass(ERROR_DESC_CLASS);
-	}
-
-	private collectFiles() {
-		const abstractFile = this.app.vault.getAbstractFileByPath(this.folderPath);
-		if (!(abstractFile instanceof TFolder)) {
-			return null;
-		}
-		return this.mode === "encrypt"
-			? FolderBulkService.collectPlainNotes(abstractFile, this.recursive)
-			: FolderBulkService.collectEncryptedNotes(abstractFile, this.recursive);
-	}
-
-	private async run(sPassword?: Setting, sConfirmPassword?: Setting): Promise<void> {
+	private async run(): Promise<void> {
 		if (this.running) {
 			return;
 		}
 
 		const isEncrypt = this.mode === "encrypt";
-		const showConfirm = isEncrypt && this.plugin.pluginSettings.confirmPassword;
+
+		if ( !(await SshKeyService.isAvailable()) ){
+			new Notice(tSshKeyError(SshKeyService.lastErrorMessage), 10000);
+			return;
+		}
 
 		const abstractFile = this.app.vault.getAbstractFileByPath(this.folderPath);
 		if (!(abstractFile instanceof TFolder)) {
@@ -243,30 +93,6 @@ export class FolderEncryptModal extends Modal {
 			new Notice(t("notice.folderNoMatchingFiles"), 8000);
 			return;
 		}
-
-		// Inline password validation (previously a second modal)
-		if (sPassword != null && this.password === "") {
-			this.showError(sPassword, t("modal.folderEncrypt.passwordRequired"));
-			const tc = sPassword.components.find(bc => bc instanceof TextComponent);
-			if (tc instanceof TextComponent) {
-				tc.inputEl.focus();
-			}
-			return;
-		}
-		if (showConfirm && sConfirmPassword != null && this.password !== this.confirmPass) {
-			this.showError(sConfirmPassword, t("modal.passwordsDontMatch"));
-			const tc = sConfirmPassword.components.find(bc => bc instanceof TextComponent);
-			if (tc instanceof TextComponent) {
-				tc.inputEl.focus();
-			}
-			return;
-		}
-
-		// Single password for the whole folder
-		const passwordAndHint: PasswordAndHint = {
-			password: this.password,
-			hint: isEncrypt ? this.hint : ""
-		};
 
 		this.running = true;
 		this.contentEl.empty();
@@ -292,8 +118,8 @@ export class FolderEncryptModal extends Modal {
 		};
 
 		result = isEncrypt
-			? await FolderBulkService.encrypt(this.plugin, abstractFile, this.recursive, passwordAndHint, onProgress)
-			: await FolderBulkService.decrypt(this.plugin, abstractFile, this.recursive, passwordAndHint, onProgress);
+			? await FolderBulkService.encrypt(this.plugin, abstractFile, this.recursive, onProgress)
+			: await FolderBulkService.decrypt(this.plugin, abstractFile, this.recursive, onProgress);
 
 		this.running = false;
 
@@ -306,10 +132,8 @@ export class FolderEncryptModal extends Modal {
 			const wasMarked = FolderMarkService.isMarked(normalizedPath);
 			FolderMarkService.addMark({
 				path: normalizedPath,
-				hint: passwordAndHint.hint,
 				recursive: this.recursive
 			});
-			FolderMarkService.putPassword(normalizedPath, passwordAndHint);
 			await this.plugin.saveSettings();
 			EncryptedIconService.refresh();
 			if (!wasMarked) {

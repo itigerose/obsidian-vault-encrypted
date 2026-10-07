@@ -1,27 +1,27 @@
 import { MarkdownView, Notice, TFile, ViewStateResult } from "obsidian";
-import { t } from "../../i18n";
+import { t, tSshKeyError } from "../../i18n";
 import { FileData, FileDataHelper, JsonFileEncoding } from "../../services/FileDataHelper.ts";
-import { PasswordAndHint, SessionPasswordService } from "../../services/SessionPasswordService.ts";
-import PluginPasswordModal from "../../PluginPasswordModal.ts";
 import { ENCRYPTED_FILE_EXTENSIONS } from "../../services/Constants.ts";
+import { SshKeyService } from "../../services/SshKeyService.ts";
 
+/**
+ * View for whole-note encrypted files. Content is decrypted automatically
+ * with the local OpenSSH Ed25519 key — there is no password prompt.
+ */
 export class EncryptedMarkdownView extends MarkdownView {
 
 	static VIEW_TYPE = 'meld-encrypted-view';
 
-	passwordAndHint : PasswordAndHint | null = null;
 	encryptedData : FileData | null = null;
 	cachedUnencryptedData : string = '';
 	dataWasChangedSinceLastSave = false;
-	
+
 	isSavingEnabled = false;
 	isLoadingFileInProgress = false;
 	isSavingInProgress = false;
-	
+
 	override allowNoFile = false;
 
-	origFile:TFile | null; // used resync password cache when renaming the file
-	
 	override getViewType(): string {
 		return EncryptedMarkdownView.VIEW_TYPE;
 	}
@@ -32,19 +32,6 @@ export class EncryptedMarkdownView extends MarkdownView {
 
 	protected override async onOpen(): Promise<void> {
 		await super.onOpen();
-
-		// add view actions
-		this.addAction(
-			'key-round',
-			t("action.changePassword"),
-			() => this.changePassword(),
-		)
-
-		this.addAction(
-			'lock',
-			t("action.lockAndClose"),
-			() => this.lockAndClose(),
-		)
 	}
 
 	override async onLoadFile(file: TFile): Promise<void> {
@@ -62,56 +49,25 @@ export class EncryptedMarkdownView extends MarkdownView {
 			const fileContents = await this.app.vault.read( file );
 			this.encryptedData = JsonFileEncoding.decode( fileContents );
 
-			this.passwordAndHint = await SessionPasswordService.getByFile( file );
-			this.passwordAndHint.hint = this.encryptedData.hint;
+			// decrypt the file content with the local SSH key — any ciphertext
+			// that cannot be authenticated simply fails and surfaces an error.
+			const decryptedText = await FileDataHelper.decrypt( this.encryptedData );
 
-			// try to decrypt the file content
-			let decryptedText: string|null = null;
-
-			if ( this.passwordAndHint.password.length > 0 ) {
-				decryptedText = await FileDataHelper.decrypt( this.encryptedData, this.passwordAndHint.password );
-			}
-			while( decryptedText == null ){
-				// prompt for password
-				this.passwordAndHint = await new PluginPasswordModal(
-					this.app,
-					t("modal.decryptingTitle", { name: file.basename }),
-					false,
-					false,
-					{ password: '', hint: this.encryptedData.hint }
-				).open2Async();
-
-				if ( this.passwordAndHint == null ) {
-					// user cancelled
-					this.leaf.detach();
-					return;
-				}
-
-				decryptedText = await FileDataHelper.decrypt( this.encryptedData, this.passwordAndHint.password );
-				if ( decryptedText == null ) {
-					new Notice(t("error.decryptionFailed"));
-				}
-			}
-
-			if ( decryptedText == null ) {
+			if ( decryptedText == null ){
+				const keyError = SshKeyService.lastErrorMessage;
+				new Notice(keyError ? tSshKeyError(keyError) : t("error.decryptionFailed"), 12000);
 				this.leaf.detach();
 				return;
 			}
 
-			if ( this.passwordAndHint != null ) {
-				SessionPasswordService.putByFile( this.passwordAndHint, file );
-			}
-
 			this.setUnencryptedViewData( decryptedText, false );
-			
-			
+
 			this.isLoadingFileInProgress = true;
 			try{
-				this.origFile = file;
 				await super.onLoadFile(file);
 			}finally{
 				this.isLoadingFileInProgress = false;
-				this.isSavingEnabled = true; // allow saving after the file is loaded with a password
+				this.isSavingEnabled = true; // allow saving after the file is loaded
 			}
 
 		}finally{
@@ -132,31 +88,18 @@ export class EncryptedMarkdownView extends MarkdownView {
 	}
 
 	override async onUnloadFile(file: TFile): Promise<void> {
-		
-		if ( this.passwordAndHint == null || this.encryptedData == null ) {
+
+		if ( this.encryptedData == null ) {
 			return;
 		}
-		
+
 		if (this.isSavingInProgress){
 			console.info( 'Saving is in progress, but forcing another save because the file is being unloaded' );
 			this.isSavingInProgress = false;
 			this.dataWasChangedSinceLastSave = true;
 		}
 		await super.onUnloadFile(file);
-	}    
-	
-	override async onRename(file: TFile): Promise<void> {
-		//console.debug('onRename', { newfile: file, oldfile:this.file});
-		if (this.origFile){
-			SessionPasswordService.clearForFile( this.origFile );
-		}    
-
-		if (this.passwordAndHint!=null){
-			SessionPasswordService.putByFile( this.passwordAndHint, file );
-		}    
-		await super.onRename(file);    
-	}    
-
+	}
 
 	private getUnencryptedViewData(): string {
 		return super.getViewData();
@@ -172,7 +115,7 @@ export class EncryptedMarkdownView extends MarkdownView {
 			// return the encrypted data which should have just been updated in the save method
 			return JsonFileEncoding.encode( this.encryptedData );
 		}
-		
+
 		// not saving, so return the unencrypted view data
 		return this.getUnencryptedViewData();
 	}
@@ -204,22 +147,18 @@ export class EncryptedMarkdownView extends MarkdownView {
 		}
 
 		console.info( 'View is being set with already encoded data, trying to decode', {data} );
-		if (this.passwordAndHint == null){
-			console.error('passwordAndHint == null');
-			return;
-		}
 		const newEncoded = JsonFileEncoding.decode(data);
-		
-		FileDataHelper.decrypt( newEncoded, this.passwordAndHint.password ).then( decryptedText => {
+
+		FileDataHelper.decrypt( newEncoded ).then( decryptedText => {
 			if ( decryptedText == null ){
-				console.info('View was being set with already encoceded data but the decryption failed, closing view');
+				console.info('View was being set with already encoded data but the decryption failed, closing view');
 				this.isSavingEnabled = false; // don't overwrite the data when we detach
 				this.leaf.detach();
 				return;
 			}
 			this.setUnencryptedViewData(decryptedText, clear);
 		});
-		
+
 	}
 
 	override async setState(state: { mode?: string }, result: ViewStateResult): Promise<void> {
@@ -247,7 +186,7 @@ export class EncryptedMarkdownView extends MarkdownView {
 		this.isSavingInProgress = true;
 		this.setViewBusy( true );
 		try{
-			
+
 			if (this.file == null){
 				console.info('Saving was prevented beacuse there is no file loaded in the view yet');
 				return;
@@ -259,21 +198,17 @@ export class EncryptedMarkdownView extends MarkdownView {
 			}
 
 			if (!this.isSavingEnabled){
-				if (this.passwordAndHint == null){
-					console.info('Saving was prevented because the file was not yet loaded with a password');
-				}else{
-					console.info('Saving was prevented because it was explicitly disabled');
-				}
+				console.info('Saving was prevented because it was explicitly disabled');
 				return;
 			}
 
-			if (this.passwordAndHint == null){
-				console.info('Saving was prevented beacuse there is no password set');
+			if ( this.encryptedData == null ){
+				console.info('Saving was prevented because the file was not yet loaded');
 				return;
 			}
-			
+
 			const unencryptedDataToSave = this.getUnencryptedViewData();
-			
+
 			if ( JsonFileEncoding.isEncoded( unencryptedDataToSave ) ){
 				// data is already encrypted, protect it from being overwritten
 				console.info('Saving was prevented beacuse the data was already encoded but it was expected to not be');
@@ -292,11 +227,7 @@ export class EncryptedMarkdownView extends MarkdownView {
 			this.setUnencryptedViewData(unencryptedDataToSave, false);
 
 			// build up-to-date encrypted data
-			this.encryptedData = await FileDataHelper.encrypt(
-				this.passwordAndHint.password,
-				this.passwordAndHint.hint,
-				unencryptedDataToSave
-			);
+			this.encryptedData = await FileDataHelper.encrypt( unencryptedDataToSave );
 
 			// call the real save.. which will call getViewData... getViewData will
 			// decide whether to return encrypted or unencrypted data (encrypted
@@ -309,46 +240,7 @@ export class EncryptedMarkdownView extends MarkdownView {
 			this.isSavingInProgress = false;
 			this.setViewBusy( false );
 		}
-		
+
 	}
-
-	lockAndClose() {
-		this.detachSafely();
-		if ( this.file != null ){
-			SessionPasswordService.clearForFile( this.file );
-		}
-	}
-
-	async changePassword(): Promise<void> {
-		if (this.file == null){
-			console.info('Unable to change password beacuse there is no file loaded in the view yet');
-			return;
-		}
-
-		// fetch password
-		const pwm = new PluginPasswordModal(
-			this.app,
-			t("modal.changePasswordTitle", { name: this.file.basename }),
-			true,
-			true,
-			await SessionPasswordService.getByFile( this.file )
-		);
-			
-		try{
-			const newPwh = await pwm.openAsync();
-
-			this.passwordAndHint = newPwh;
-		
-			SessionPasswordService.putByFile( newPwh, this.file );
-
-			this.dataWasChangedSinceLastSave = true;
-			await this.save();
-
-			new Notice( t("notice.passwordChanged") );
-		}catch{
-			new Notice( t("notice.passwordWasntChanged") );
-		}
-	}
-
 
 }

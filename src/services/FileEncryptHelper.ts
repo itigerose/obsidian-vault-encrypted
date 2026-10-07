@@ -1,6 +1,5 @@
 import MeldEncrypt from "../main.ts";
 import { TFile, TextFileView } from "obsidian";
-import { PasswordAndHint, SessionPasswordService } from "./SessionPasswordService.ts";
 import { FileDataHelper, JsonFileEncoding } from "./FileDataHelper.ts";
 import { Utils } from "./Utils.ts";
 import { ENCRYPTED_FILE_EXTENSION_DEFAULT } from "./Constants.ts";
@@ -9,6 +8,9 @@ import { EncryptedMarkdownView } from "../features/feature-whole-note-encrypt/En
 /**
  * Shared single-file encrypt/decrypt primitives reused by both the
  * single-note convert feature and the folder-bulk feature.
+ *
+ * All cryptography is keyed with the local OpenSSH Ed25519 seed — there are
+ * no passwords anywhere in this pipeline.
  */
 export class FileEncryptHelper {
 
@@ -18,38 +20,33 @@ export class FileEncryptHelper {
 	static async encryptFile(
 		plugin: MeldEncrypt,
 		file: TFile,
-		passwordAndHint: PasswordAndHint,
 		content?: string
 	): Promise<string> {
 		// content may be passed in when the note is still only in an editor buffer
 		const plainText = content ?? await plugin.app.vault.read(file);
-		const encryptedData = await FileDataHelper.encrypt(passwordAndHint.password, passwordAndHint.hint, plainText);
+		const encryptedData = await FileDataHelper.encrypt(plainText);
 		return JsonFileEncoding.encode(encryptedData);
 	}
 
 	/**
-	 * Decrypt an encrypted file. Returns null when the password is wrong.
+	 * Decrypt an encrypted file. Returns null when the SSH key is unavailable
+	 * or the file cannot be decrypted.
 	 */
-	static async decryptFile(plugin: MeldEncrypt, file: TFile, password: string): Promise<string | null> {
+	static async decryptFile(plugin: MeldEncrypt, file: TFile): Promise<string | null> {
 		const encryptedFileContent = await plugin.app.vault.read(file);
 		const encryptedData = JsonFileEncoding.decode(encryptedFileContent);
-		return await FileDataHelper.decrypt(encryptedData, password);
+		return await FileDataHelper.decrypt(encryptedData);
 	}
 
 	/**
-	 * Rename the file to the target extension, write the new content, and
-	 * remember the password for the (new) file. Reopens the file if it was open.
-	 *
-	 * Pass `rememberPassword = false` when decrypting: once the content is
-	 * back to plaintext the cached password is dropped instead of kept.
+	 * Rename the file to the target extension and write the new content.
+	 * Reopens the file if it was open.
 	 */
-	static async closeUpdateRememberPasswordThenReopen(
+	static async closeUpdateThenReopen(
 		plugin: MeldEncrypt,
 		file: TFile,
 		newFileExtension: string,
-		content: string,
-		pw: PasswordAndHint,
-		rememberPassword = true
+		content: string
 	): Promise<void> {
 		let didDetach = false;
 
@@ -68,11 +65,6 @@ export class FileEncryptHelper {
 			const newFilepath = Utils.getFilePathWithNewExtension(file, newFileExtension);
 			await plugin.app.fileManager.renameFile(file, newFilepath);
 			await plugin.app.vault.modify(file, content);
-			if (rememberPassword) {
-				SessionPasswordService.putByFile(pw, file);
-			} else {
-				SessionPasswordService.clearForFile(file);
-			}
 		} finally {
 			if (didDetach) {
 				await plugin.app.workspace.getLeaf(true).openFile(file);

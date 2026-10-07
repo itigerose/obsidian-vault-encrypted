@@ -4,13 +4,8 @@ import { IFeatureRandomPasswordSettings } from "../features/feature-random-passw
 import { IFeatureFolderEncryptSettings } from "../features/feature-folder-encrypt/IFeatureFolderEncryptSettings.ts";
 
 export interface IMeldEncryptPluginSettings {
-	confirmPassword: boolean;
-	rememberPassword: boolean;
-	rememberPasswordTimeout: number;
-
 	featureWholeNoteEncrypt : IFeatureWholeNoteEncryptSettings;
 	featureInplaceEncrypt : IFeatureInplaceEncryptSettings;
 	featureRandomPassword : IFeatureRandomPasswordSettings;
 	featureFolderEncrypt : IFeatureFolderEncryptSettings;
 }
-

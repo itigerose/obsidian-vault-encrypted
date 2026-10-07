@@ -1,9 +1,9 @@
 import { Notice, Plugin } from 'obsidian';
-import { t } from './i18n';
+import { t, tSshKeyError } from './i18n';
 import MeldEncryptSettingsTab from './settings/MeldEncryptSettingsTab.ts';
 import { IMeldEncryptPluginSettings } from './settings/MeldEncryptPluginSettings.ts';
 import { IMeldEncryptPluginFeature } from './features/IMeldEncryptPluginFeature.ts';
-import { SessionPasswordService } from './services/SessionPasswordService.ts';
+import { SshKeyService } from './services/SshKeyService.ts';
 import FeatureInplaceEncrypt from './features/feature-inplace-encrypt/FeatureInplaceEncrypt.ts';
 import FeatureConvertNote from './features/feature-convert-note/FeatureConvertNote.ts';
 import FeatureWholeNoteEncryptV2 from './features/feature-whole-note-encrypt/FeatureWholeNoteEncrypt.ts';
@@ -22,7 +22,7 @@ export default class MeldEncrypt extends Plugin {
 	private enabledFeatures : IMeldEncryptPluginFeature[] = [];
 
 	async onload() {
-		
+
 		// Settings
 		await this.loadSettings();
 
@@ -45,13 +45,26 @@ export default class MeldEncrypt extends Plugin {
 		// End Settings
 
 		this.addCommand({
-			id: 'meld-encrypt-clear-password-cache',
-			name: t("command.clearPasswordCache"),
-			icon: 'shield-ellipsis',
-			callback: () => {
-				const itemsCleared = SessionPasswordService.clear();
-				new Notice( t("notice.itemsCleared", { count: itemsCleared.toString() }) );
+			id: 'meld-encrypt-reload-ssh-key',
+			name: t("command.reloadSshKey"),
+			icon: 'key-round',
+			callback: async () => {
+				await SshKeyService.reload();
+				const status = SshKeyService.getStatus();
+				if (status.loaded) {
+					new Notice(t("notice.sshKeyReloaded", { source: status.source }));
+				} else {
+					new Notice(tSshKeyError(SshKeyService.lastErrorMessage), 10000);
+				}
 			},
+		});
+
+		// Try to load the SSH key once at startup so problems surface early
+		// (console only — the UI shows a notice on first actual use).
+		void SshKeyService.isAvailable().then(loaded => {
+			if (!loaded) {
+				console.info('vault-encrypt: SSH key not available at startup:', SshKeyService.lastErrorMessage);
+			}
 		});
 
 		// load features
@@ -60,7 +73,7 @@ export default class MeldEncrypt extends Plugin {
 		});
 
 	}
-	
+
 	override onunload() {
 		this.enabledFeatures.forEach(async f => {
 			f.onunload();
@@ -69,15 +82,11 @@ export default class MeldEncrypt extends Plugin {
 	}
 
 	async loadSettings() {
-		
-		const DEFAULT_SETTINGS: IMeldEncryptPluginSettings = {
-			confirmPassword: true,
-			rememberPassword: true,
-			rememberPasswordTimeout: 30,
 
+		const DEFAULT_SETTINGS: IMeldEncryptPluginSettings = {
 			featureWholeNoteEncrypt: {
 			},
-			
+
 			featureInplaceEncrypt:{
 				expandToWholeLines: false,
 				markerSearchLimit: 10000,
@@ -110,14 +119,6 @@ export default class MeldEncrypt extends Plugin {
 		if (!Array.isArray(this.settings.featureFolderEncrypt.markedFolders)) {
 			this.settings.featureFolderEncrypt.markedFolders = [];
 		}
-
-		// apply settings
-		SessionPasswordService.setActive( this.settings.rememberPassword );
-		SessionPasswordService.setAutoExpire(
-			this.settings.rememberPasswordTimeout == 0
-			? null
-			: this.settings.rememberPasswordTimeout
-		);
 	}
 
 	async saveSettings() {

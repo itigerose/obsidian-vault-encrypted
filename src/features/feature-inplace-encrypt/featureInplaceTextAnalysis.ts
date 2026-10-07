@@ -78,14 +78,6 @@ export class FeatureInplaceTextAnalysis{
 			return null; // invalid format
 		}
 
-		if ( this.hasObsoleteEncryptedPrefix ){
-			result.version = 0;
-		}else if ( this.prefix == _PREFIX_B || this.prefix == _PREFIX_B_VISIBLE ){
-			result.version = 2;
-		}else if ( this.prefix == _PREFIX_A || this.prefix == _PREFIX_A_VISIBLE ){
-			result.version = 1;
-		}
-
 		// remove markers from start and end
 		const content = text.substring(this.prefix.length, text.length - this.suffix.length);
 
@@ -154,7 +146,7 @@ export function parseInlineEncryptFormat(text: string): Decryptable | null {
 	const suffix = _PREFIX_INLINE_CLOSE + _INLINE_CIPHER_OPEN + cipherText + _INLINE_CIPHER_CLOSE; // "){加密内容}"
 
 	const result = new Decryptable();
-	result.version = 2; // new format uses the current default crypto helper
+	result.version = '2.12.3.1'; // SSH-key mode marker (metadata only)
 	result.visibleText = visibleText;
 	result.base64CipherText = cipherText;
 	result.hint = '';

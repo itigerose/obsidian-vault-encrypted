@@ -1,12 +1,11 @@
 import MeldEncrypt from "../../main.ts";
-import { t } from "../../i18n";
+import { t, tSshKeyError } from "../../i18n";
 import { IMeldEncryptPluginFeature } from "../IMeldEncryptPluginFeature.ts";
 import { EncryptedMarkdownView } from "./EncryptedMarkdownView.ts";
-import { MarkdownView, TFolder, normalizePath, moment, TFile } from "obsidian";
-import PluginPasswordModal from "../../PluginPasswordModal.ts";
-import { PasswordAndHint, SessionPasswordService } from "../../services/SessionPasswordService.ts";
+import { MarkdownView, Notice, TFolder, normalizePath, moment, TFile } from "obsidian";
 import { FileDataHelper, JsonFileEncoding } from "../../services/FileDataHelper.ts";
 import { ENCRYPTED_FILE_EXTENSIONS, ENCRYPTED_FILE_EXTENSION_DEFAULT } from "../../services/Constants.ts";
+import { SshKeyService } from "../../services/SshKeyService.ts";
 
 export default class FeatureWholeNoteEncryptV2 implements IMeldEncryptPluginFeature {
 
@@ -16,7 +15,6 @@ export default class FeatureWholeNoteEncryptV2 implements IMeldEncryptPluginFeat
 
 	async onload( plugin: MeldEncrypt ) {
 		this.plugin = plugin;
-		//this.settings = settings.featureWholeNoteEncrypt;
 
 		this.plugin.addCommand({
 			id: 'meld-encrypt-create-new-note',
@@ -25,70 +23,10 @@ export default class FeatureWholeNoteEncryptV2 implements IMeldEncryptPluginFeat
 			callback: async () => await this.processCreateNewEncryptedNoteCommand( this.getDefaultFileFolder() ),
 		});
 
-		this.plugin.addCommand({
-			id: 'meld-encrypt-close-and-forget',
-			name: t("command.lockAndCloseAll"),
-			icon: 'book-lock',
-			callback: async () => await this.processLockAndCloseAllEncryptedNotesCommand(),
-		});
-
 		// configure status indicator
 		this.statusIndicator = this.plugin.addStatusBarItem();
 		this.statusIndicator.hide();
 		this.statusIndicator.setText('🔐');
-
-		// editor context menu
-		this.plugin.registerEvent( this.plugin.app.workspace.on('editor-menu', (menu, editor, view) => {
-			if( view.file == null || !ENCRYPTED_FILE_EXTENSIONS.includes( view.file.extension ) ){
-				return;
-			}
-			if (view instanceof EncryptedMarkdownView){
-				menu.addItem( (item) => {
-					item
-						.setTitle(t("action.changePassword"))
-						.setIcon('key-round')
-						.onClick( async () => await view.changePassword() );
-					}
-				);
-				menu.addItem( (item) => {
-					item
-						.setTitle(t("action.lockAndClose"))
-						.setIcon('lock')
-						.onClick( () => view.lockAndClose() );
-					}
-				);
-			}
-		}));
-
-		this.plugin.registerEvent( this.plugin.app.workspace.on('file-menu', (menu, file) => {
-			if ( !(file instanceof TFile) ){
-				return
-			}
-			if( !ENCRYPTED_FILE_EXTENSIONS.includes( file.extension ) ){
-				return;
-			}
-
-			const view = this.plugin.app.workspace.getActiveViewOfType( EncryptedMarkdownView );
-			if (view == null || view.file != file){
-				return;
-			}
-
-			menu.addItem( (item) => {
-				item
-					.setTitle(t("action.changePassword"))
-					.setIcon('key-round')
-					.onClick( async () => await view.changePassword() );
-				}
-			);
-			menu.addItem( (item) => {
-				item
-					.setTitle(t("action.lockAndClose"))
-					.setIcon('lock')
-					.onClick( () => view.lockAndClose() );
-				}
-			);
-		}))
-
 
 		// register view
 		this.plugin.registerView( EncryptedMarkdownView.VIEW_TYPE, (leaf) => new EncryptedMarkdownView(leaf) );
@@ -111,7 +49,7 @@ export default class FeatureWholeNoteEncryptV2 implements IMeldEncryptPluginFeat
 				if ( leaf == null ){
 					return;
 				}
-				
+
 				if ( leaf.view instanceof EncryptedMarkdownView ){
 					// correct view already active
 					return;
@@ -123,12 +61,12 @@ export default class FeatureWholeNoteEncryptV2 implements IMeldEncryptPluginFeat
 					if ( file == null ){
 						return;
 					}
-					
+
 					if ( ENCRYPTED_FILE_EXTENSIONS.includes( file.extension ) ){
 						// file is encrypted but has the wrong view type
 						const viewState = leaf.getViewState();
 						viewState.type = EncryptedMarkdownView.VIEW_TYPE;
-						
+
 						await leaf.setViewState( viewState );
 
 						return;
@@ -139,17 +77,6 @@ export default class FeatureWholeNoteEncryptV2 implements IMeldEncryptPluginFeat
 			} )
 		);
 
-	}
-
-	private async processLockAndCloseAllEncryptedNotesCommand(): Promise<void> {
-		// loop through all open leaves
-		const leaves = this.plugin.app.workspace.getLeavesOfType( EncryptedMarkdownView.VIEW_TYPE );
-		for ( const leaf of leaves ) {
-			const view = leaf.view as EncryptedMarkdownView;
-			if ( view != null ){
-				view.lockAndClose();
-			}
-		}
 	}
 
 	private getDefaultFileFolder() : TFolder {
@@ -163,37 +90,19 @@ export default class FeatureWholeNoteEncryptV2 implements IMeldEncryptPluginFeat
 	}
 
 	private async processCreateNewEncryptedNoteCommand( parentFolder: TFolder ) : Promise<void> {
-		
-		const newFilename = moment().format( `[Untitled] YYYYMMDD hhmmss[.${ENCRYPTED_FILE_EXTENSION_DEFAULT}]`);
-		const newFilepath = normalizePath( parentFolder.path + "/" + newFilename );
-		
-		let pwh : PasswordAndHint | undefined;
 
-		// if the password is unknown, prompt for it (pre-filled with the
-		// folder-level remembered password when one exists)
-		if ( !pwh ){
-			const pwm = new PluginPasswordModal(
-				this.plugin.app,
-				t("modal.encryptPasswordPrompt"),
-				true,
-				this.plugin.pluginSettings.confirmPassword,
-				await SessionPasswordService.getByPathAsync( newFilepath )
-			);
-
-			try{
-				pwh = await pwm.openAsync();
-			}catch{
-				return; // cancelled
-			}
+		if ( !(await SshKeyService.isAvailable()) ){
+			new Notice( tSshKeyError(SshKeyService.lastErrorMessage), 10000 );
+			return;
 		}
 
+		const newFilename = moment().format( `[Untitled] YYYYMMDD hhmmss[.${ENCRYPTED_FILE_EXTENSION_DEFAULT}]`);
+		const newFilepath = normalizePath( parentFolder.path + "/" + newFilename );
+
 		// create the new file
-		const fileData = await FileDataHelper.encrypt( pwh.password, pwh.hint, '' )
+		const fileData = await FileDataHelper.encrypt( '' )
 		const fileContents = JsonFileEncoding.encode( fileData );
 		const file = await this.plugin.app.vault.create( newFilepath, fileContents );
-		
-		// cache the password
-		SessionPasswordService.putByFile( pwh, file );
 
 		// open the file
 		const leaf = this.plugin.app.workspace.getLeaf( true );

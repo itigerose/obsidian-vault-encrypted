@@ -1,21 +1,18 @@
 import { normalizePath } from "obsidian";
 import { IMarkedFolder } from "./IFeatureFolderEncryptSettings.ts";
-import { PasswordAndHint, SessionPasswordService } from "../../services/SessionPasswordService.ts";
 
 /**
  * Holds the list of folders flagged as "encrypted".
  *
- * The list itself lives in the plugin settings (persisted); passwords live in
- * an in-memory map only, so they never touch the disk. When a password is not
- * in memory we fall back to the plugin's session password service, and only
- * then ask the user.
+ * The list lives in the plugin settings (persisted). Encryption itself is
+ * keyed with the local OpenSSH Ed25519 key, so there are no folder
+ * passwords and no hints anymore — the mark only drives auto-encrypt of new
+ * notes and the lock icon.
  */
 export class FolderMarkService {
 
 	/** Reference to the array stored in the plugin settings — mutated in place. */
 	private static marks: IMarkedFolder[] = [];
-
-	private static readonly passwords = new Map<string, PasswordAndHint>();
 
 	static readonly rootPath = "/";
 
@@ -24,21 +21,11 @@ export class FolderMarkService {
 		const list = Array.isArray(marks) ? marks : [];
 		for (const mark of list) {
 			mark.path = FolderMarkService.normalizeFolderPath(mark.path);
-			mark.hint = mark.hint ?? "";
 			mark.recursive = mark.recursive ?? true;
 		}
 		FolderMarkService.marks = list;
-		// When the session remember-timer expires (or the cache is cleared),
-		// wipe the folder passwords too so the folder auto-lock re-engages and
-		// the "remember password time" setting applies to encrypted folders.
-		SessionPasswordService.registerClearCallback(FolderMarkService.clearPasswordsForSession);
 		return list;
 	}
-
-	/** Clears only the in-memory folder passwords — used on session clear. */
-	private static readonly clearPasswordsForSession = (): void => {
-		FolderMarkService.passwords.clear();
-	};
 
 	static getMarks(): IMarkedFolder[] {
 		return FolderMarkService.marks;
@@ -75,7 +62,7 @@ export class FolderMarkService {
 	/**
 	 * Find the mark covering a file's parent folder. When several marks match
 	 * (e.g. a folder inside a recursive marked folder) the most specific one
-	 * wins, so the closest folder's password is used.
+	 * wins.
 	 */
 	static findMarkForParentPath(parentPath: string): IMarkedFolder | null {
 		const target = FolderMarkService.normalizeFolderPath(parentPath);
@@ -104,13 +91,11 @@ export class FolderMarkService {
 		const path = FolderMarkService.normalizeFolderPath(mark.path);
 		const existing = FolderMarkService.getMark(path);
 		if (existing != null) {
-			existing.hint = mark.hint ?? "";
 			existing.recursive = mark.recursive ?? true;
 			return;
 		}
 		FolderMarkService.marks.push({
 			path,
-			hint: mark.hint ?? "",
 			recursive: mark.recursive ?? true
 		});
 	}
@@ -123,8 +108,6 @@ export class FolderMarkService {
 			return false;
 		}
 		FolderMarkService.marks.splice(0, FolderMarkService.marks.length, ...remaining);
-		FolderMarkService.passwords.delete(target);
-		SessionPasswordService.clearForFolder(target);
 		return true;
 	}
 
@@ -152,10 +135,6 @@ export class FolderMarkService {
 			}
 		}
 
-		if (changed) {
-			FolderMarkService.movePassword(oldNorm, newNorm);
-			SessionPasswordService.clearForFolder(oldNorm);
-		}
 		return changed;
 	}
 
@@ -174,63 +153,6 @@ export class FolderMarkService {
 			return false;
 		}
 		FolderMarkService.marks.splice(0, FolderMarkService.marks.length, ...remaining);
-		FolderMarkService.passwords.delete(target);
-		SessionPasswordService.clearForFolder(target);
 		return true;
-	}
-
-	/* ---------------- passwords (in memory only) ---------------- */
-
-	static putPassword(folderPath: string, passwordAndHint: PasswordAndHint): void {
-		const target = FolderMarkService.normalizeFolderPath(folderPath);
-		FolderMarkService.passwords.set(target, passwordAndHint);
-		// also hand it to the plugin's session cache so other flows can reuse it.
-		// NOTE: keyed by the folder path itself (not its parent).
-		SessionPasswordService.putByFolder(passwordAndHint, target);
-	}
-
-	static getPassword(folderPath: string): PasswordAndHint {
-		const target = FolderMarkService.normalizeFolderPath(folderPath);
-		// Touch the session cache first: this slides the remember-timer forward
-		// on every access AND, when the timer has expired, wipes the folder
-		// password via the registered clear callback. Only after that do we
-		// read our own (now possibly cleared) in-memory store.
-		SessionPasswordService.getByFolder(target);
-		const inMemory = FolderMarkService.passwords.get(target);
-		if (inMemory != null && inMemory.password !== "") {
-			return inMemory;
-		}
-		// fall back to the plugin's session password cache, keyed by folder path
-		return SessionPasswordService.getByFolder(target);
-	}
-
-	static hasPassword(folderPath: string): boolean {
-		return FolderMarkService.getPassword(folderPath).password !== "";
-	}
-
-	/**
-	 * Like `hasPassword`, but reads only the in-memory map — it does NOT touch
-	 * the session password service. Used when collapsing folders on session
-	 * clear, where reaching into the session service would re-arm the remember
-	 * timer and defeat the whole point of expiring.
-	 */
-	static hasPasswordInMemory(folderPath: string): boolean {
-		const target = FolderMarkService.normalizeFolderPath(folderPath);
-		const inMemory = FolderMarkService.passwords.get(target);
-		return inMemory != null && inMemory.password !== "";
-	}
-
-	static clearPasswords(): void {
-		FolderMarkService.passwords.clear();
-		SessionPasswordService.clear();
-	}
-
-	private static movePassword(oldPath: string, newPath: string): void {
-		const pw = FolderMarkService.passwords.get(oldPath);
-		if (pw == null) {
-			return;
-		}
-		FolderMarkService.passwords.delete(oldPath);
-		FolderMarkService.passwords.set(newPath, pw);
 	}
 }

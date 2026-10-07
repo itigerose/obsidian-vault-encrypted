@@ -1,29 +1,23 @@
 import { App, Modal, Notice, Setting, TFolder } from "obsidian";
 import MeldEncrypt from "../../main.ts";
-import { t } from "../../i18n";
-import { UiHelper } from "../../services/UiHelper.ts";
-import { PasswordAndHint } from "../../services/SessionPasswordService.ts";
+import { t, tSshKeyError } from "../../i18n";
 import { FolderBulkService } from "./FolderBulkService.ts";
 import { FolderMarkService } from "./FolderMarkService.ts";
+import { SshKeyService } from "../../services/SshKeyService.ts";
 
 /**
  * Dialog shown when a folder is flagged as "encrypted".
  *
- * Asks for the password (kept in memory only) and lets the user decide whether
- * the notes already living in the folder should be encrypted right away.
+ * Asks only whether the notes already living in the folder should be
+ * encrypted right away — there is no password, since encryption is keyed
+ * with the local OpenSSH Ed25519 key.
  */
 export class MarkFolderModal extends Modal {
 
 	private readonly plugin: MeldEncrypt;
 	private folderPath: string;
 	private recursive: boolean;
-
-	private password = "";
-	private confirmPassword = "";
-	private hint = "";
 	private encryptExisting = true;
-
-	private sConfirmPassword: Setting | null = null;
 
 	constructor(app: App, plugin: MeldEncrypt, folderPath: string) {
 		super(app);
@@ -38,7 +32,6 @@ export class MarkFolderModal extends Modal {
 
 		contentEl.createEl("h2", { text: t("modal.markFolder.title") });
 		contentEl.createEl("p", { text: t("modal.markFolder.desc") });
-		contentEl.createEl("p", { text: t("modal.markFolder.descNoPasswordStored") });
 
 		// Folder path (read-only plain text — no setting row, not editable)
 		contentEl.createEl("p", {
@@ -46,46 +39,8 @@ export class MarkFolderModal extends Modal {
 			cls: "ve-folder-path-text"
 		});
 
-		// Password
-		UiHelper.buildPasswordSetting({
-			container: contentEl,
-			name: t("modal.password"),
-			placeholder: t("modal.passwordFieldPlaceholder"),
-			autoFocus: true,
-			onChangeCallback: value => {
-				this.password = value;
-			},
-			onEnterCallback: () => this.confirm()
-		});
-
-		// Confirm password (only when the plugin asks for confirmation)
-		this.sConfirmPassword = UiHelper.buildPasswordSetting({
-			container: contentEl,
-			name: t("modal.confirmPassword"),
-			placeholder: t("modal.confirmPasswordFieldPlaceholder"),
-			onChangeCallback: value => {
-				this.confirmPassword = value;
-			},
-			onEnterCallback: () => this.confirm()
-		});
-
-		if (!this.plugin.pluginSettings.confirmPassword) {
-			this.sConfirmPassword.settingEl.hide();
-		}
-
-		// Optional hint
-		new Setting(contentEl)
-			.setName(t("modal.optionalPasswordHint"))
-			.addText(text => {
-				text.inputEl.placeholder = t("modal.passwordHintFieldPlaceholder");
-				text.onChange(value => {
-					this.hint = value;
-				});
-			});
-
 		// Recursion is driven by the plugin setting
 		// (settings.folderEncrypt.recursive) — see FeatureFolderEncrypt.
-		// No in-dialog toggle here on purpose.
 
 		// Encrypt notes that are already in the folder
 		new Setting(contentEl)
@@ -116,35 +71,19 @@ export class MarkFolderModal extends Modal {
 	}
 
 	private confirm(): void {
-		if (this.password.length === 0) {
-			new Notice(t("notice.passwordRequired"));
-			return;
-		}
-
-		if (this.plugin.pluginSettings.confirmPassword) {
-			if (this.password !== this.confirmPassword) {
-				this.sConfirmPassword?.setDesc(t("modal.passwordsDontMatch"));
-				return;
-			}
-			this.sConfirmPassword?.setDesc("");
-		}
-
 		const folderPath = this.folderPath;
-		const passwordAndHint: PasswordAndHint = { password: this.password, hint: this.hint };
 
 		this.close();
 
-		void this.commit(folderPath, passwordAndHint, this.recursive, this.encryptExisting);
+		void this.commit(folderPath, this.recursive, this.encryptExisting);
 	}
 
 	private async commit(
 		folderPath: string,
-		passwordAndHint: PasswordAndHint,
 		recursive: boolean,
 		encryptExisting: boolean
 	): Promise<void> {
-		FolderMarkService.addMark({ path: folderPath, hint: passwordAndHint.hint, recursive });
-		FolderMarkService.putPassword(folderPath, passwordAndHint);
+		FolderMarkService.addMark({ path: folderPath, recursive });
 		await this.plugin.saveSettings();
 
 		new Notice(t("notice.folderMarked", { path: folderPath }));
@@ -153,12 +92,17 @@ export class MarkFolderModal extends Modal {
 			return;
 		}
 
+		if ( !(await SshKeyService.isAvailable()) ){
+			new Notice(tSshKeyError(SshKeyService.lastErrorMessage), 10000);
+			return;
+		}
+
 		const abstractFile = this.app.vault.getAbstractFileByPath(folderPath);
 		if (!(abstractFile instanceof TFolder)) {
 			return;
 		}
 
-		const result = await FolderBulkService.encrypt(this.plugin, abstractFile, recursive, passwordAndHint);
+		const result = await FolderBulkService.encrypt(this.plugin, abstractFile, recursive);
 
 		new Notice(t("notice.folderEncryptSummary", {
 			succeeded: result.succeeded.toString(),

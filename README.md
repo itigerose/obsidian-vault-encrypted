@@ -12,41 +12,52 @@ Encrypted content is never written to disk in plaintext, giving you peace of min
 
 > [!WARNING]
 > ⚠️ Use at Your Own Risk ⚠️
-> - Your passwords are never stored by the plugin. If you forget your password, your notes **cannot** be decrypted.
-> - The encryption methods used have not been independently audited. Unauthorized access may be possible if someone gains access to your files.
-> - Bugs may be introduced at any time. You are solely responsible for maintaining backups of your notes.
+> - Encryption is keyed with your **local OpenSSH Ed25519 private key** (`~/.ssh/id_ed25519`). Anything encrypted by this plugin can only be decrypted on a machine that holds the same private key. Keep a backup of the key.
+> - If a ciphertext cannot be authenticated (wrong or missing key, tampered data, or a payload from a different scheme) decryption simply fails and reports an error.
+> - Encryption methods have not been independently audited. You are solely responsible for maintaining backups of your notes.
+
+---
+
+## Key mode: local SSH key (Ed25519)
+
+Since v2.12.3.1 there are **no passwords and no prompts**. All cryptography is keyed directly with the 32-byte seed of your local OpenSSH Ed25519 private key:
+
+- The plugin looks for an **unencrypted** private key at `~/.ssh/id_ed25519` (desktop only; Node/Electron required).
+- The 32-byte Ed25519 seed is used directly as an AES-256-GCM key — no KDF, no salt, no password ever typed.
+- The key is parsed locally and imported as a non-extractable `CryptoKey`; the seed never leaves memory and is never written anywhere.
+- Passphrase-protected keys are rejected — remove the passphrase (`ssh-keygen -p`) or use a key without one.
+- Command *Reload SSH key* re-reads the key; the settings tab shows the current key status.
+- Mobile is not supported by this mode (the plugin shows a clear error instead).
 
 ---
 
 ## Features
 
 ### 1. Whole Note Encryption
-Encrypt an entire note so its contents are completely unreadable without a password.
+Encrypt an entire note so its contents are unreadable without your SSH key.
 
 - **New encrypted note** — `Ctrl/Cmd+P` → *Create new encrypted note*, or right-click a folder in the File Explorer → *New encrypted note*.
 - **Convert existing note** — `Ctrl/Cmd+P` → *Convert to or from an Encrypted note*, or right-click a `.md` file → *Encrypt note* / right-click an encrypted file → *Decrypt note*.
-- Encrypted notes open in a dedicated locked view. You are prompted for the password each time; you can **change the password**, or **lock & close** a note.
-- Use the command **Lock and Close all open encrypted notes** to lock everything at once.
+- Encrypted notes open in a dedicated view and are decrypted automatically — no prompt.
 
 ### 2. Inline Encryption (行内加密)
 Encrypt only a portion of a note, keeping the rest readable.
 
 - **Encrypt Selection** — select text, then `Ctrl/Cmd+P` → *Encrypt Selection* (or right-click → *Encrypt Selection*).
-- **Decrypt Selection** — right-click an encrypted block → *Decrypt Selection* (in Live Preview the block is replaced with the original plaintext in place). In Reading view, double-click the rendered `🔐` block to reveal it.
-- Encrypted text is stored in the new `encrypt(visible text){cipher}` format. The *visible text* is shown in Reading view as a clickable marker; the *cipher* is the encrypted payload.
-- Legacy `🔐β …` / `🔐α …` markers from older versions are still decrypted for backward compatibility.
-- An optional **password hint** can be attached to help you remember the password.
+- **Decrypt Selection** — click a rendered cipher block to peek, right-click → *Decrypt Selection* to replace it in place.
+- Encrypted text is stored in the `encrypt(visible text){cipher}` format. The *visible text* is shown in Reading view as a clickable marker; the *cipher* is the encrypted payload.
+- Legacy `🔐β …` / `🔐α …` markers are still *detected*, but their password-based cipher text can no longer be decrypted.
 
 ### 3. Folder Encryption
 
 #### 3.1 Mark a folder as encrypted (auto-encrypt)
-Flag a folder as *encrypted* and every **new** `.md` note created inside it is converted to an encrypted `.mdenc` file automatically; notes moved into the folder are encrypted too. The password lives in memory only (never on disk) and follows Obsidian's Keychain / session-cache conventions.
+Flag a folder as *encrypted* and every **new** `.md` note created inside it is converted to an encrypted `.mdenc` file automatically; notes moved into the folder are encrypted too.
 
-- Right-click a folder in the File Explorer → *Mark folder as encrypted*, set a password (optional hint), choose recursive sub-folders, and whether to **also encrypt the notes already inside** (on by default).
+- Right-click a folder in the File Explorer → *Mark folder as encrypted*, and choose whether to **also encrypt the notes already inside** (on by default). No password needed.
 - Marked folders and encrypted files show a 🔒 lock icon in the File Explorer.
-- Right-click a marked folder to *Unmark* (removes the flag only — no bulk decrypt) or *Encrypt existing notes*.
+- Right-click a marked folder to *Unmark* (removes the flag only — no bulk decrypt).
 - Command *Mark / unmark folder of current note* targets the active note's folder.
-- The settings tab lists every marked folder with a remove button; renaming / moving / deleting a marked folder keeps the marks in sync automatically.
+- Renaming / moving / deleting a marked folder keeps the marks in sync automatically.
 
 #### 3.2 One-shot bulk encrypt / decrypt
 - Right-click a folder → *Decrypt folder*, or use commands *Encrypt folder of current note* / *Decrypt folder of current note* for a one-shot bulk operation (recursive by default).
@@ -55,31 +66,21 @@ Flag a folder as *encrypted* and every **new** `.md` note created inside it is c
 ### 4. Random Password Generator
 - Ribbon icon or `Ctrl/Cmd+P` → *Generate Random Password* opens a modal where you set length (1–256) and toggle character classes (uppercase, lowercase, numbers, symbols). Regenerate and copy with one click.
 
-### 5. Session Password Cache
-- When **Remember password** is on, the last used password is cached automatically (keyed to the note or folder) until Obsidian closes or the timeout elapses.
-- **Clear Session Password Cache** wipes the cache immediately.
-
 ---
 
 ## Encryption
 
-All cryptography is performed locally with the Web Crypto API (`crypto.subtle`), which is available in both Obsidian's desktop and mobile runtimes. Three schemes exist and are selected automatically by a **version marker** embedded in the ciphertext, so encrypted data created by older versions remains decryptable. **All new encryptions use version 2 (β).**
+All cryptography is performed locally with the Web Crypto API (`crypto.subtle`). Since v2.12.3.1 there is a single scheme:
 
-| Version | Marker | Key derivation | Cipher | Notes |
+| Version | Marker | Key | Cipher | Notes |
 | --- | --- | --- | --- | --- |
-| **2 (default, β)** | `🔐β` | PBKDF2-HMAC-**SHA-512**, **210,000** iterations, random 16-byte salt | AES-**256**-GCM, random 16-byte IV | Current standard. Iteration count aligns with OWASP guidance for PBKDF2-SHA512. |
-| **1 (α)** | `🔐α` | PBKDF2-HMAC-SHA-256, 1,000 iterations, hardcoded salt (`XHWnDAT6ehMVY2zD`) | AES-256-GCM, random 16-byte IV | Retained for backward compatibility only; low iterations and a static salt. |
-| **0 (obsolete)** | `🔐` | `SHA-256(password)` used directly as the key — no PBKDF2, no salt | AES-256-GCM, **fixed** 12-byte IV | Insecure: nonce reuse plus an unsalted key. Never used to create new ciphertext. |
+| **2.12.3.1 (current)** | file envelope `"2.12.3.1"` / inline version `"2.12.3.1"` | Ed25519 seed (32 bytes) of `~/.ssh/id_ed25519`, used directly | AES-256-GCM, random 16-byte IV | No KDF, no salt — the seed already carries high entropy. |
+| 2 (β) / 1 (α) / 0 | `🔐β` / `🔐α` / `🔐` | PBKDF2(password) | AES-256-GCM | Older password-based markers. They are not produced by this build; attempting to decrypt such a payload fails with a decrypt error. |
 
 ### Data format
 
-- **Whole-note / file encryption** writes a JSON envelope: `{ "version": "2.0", "hint": "<password hint>", "encodedData": "<Base64>" }`. The Base64 payload is laid out as `IV(16 bytes) ‖ salt(16 bytes) ‖ AES-GCM ciphertext + authentication tag`.
-- **Inline encryption** embeds the Base64 payload directly in the note using markers — `%%🔐β <payload>` (hidden in source) or the visible `🔐β <payload>`, plus the newer `encrypt(visible text){<payload>}` format. The version is detected from the marker at decryption time, and legacy `🔐α` / `🔐` markers are still supported.
-
-### Security assessment
-
-- The default scheme (v2) is a mainstream, sound construction: PBKDF2-SHA512 with 210k iterations, a random per-message salt, and a random IV under AES-256-GCM.
-- Legacy v0 has a critical weakness — a fixed IV combined with an unsalted key — and v1 uses a hardcoded salt with only 1,000 iterations. Both exist solely to decrypt historical data and are never used to produce new ciphertext.
+- **Whole-note / file encryption** writes a JSON envelope: `{ "version": "2.12.3.1", "encodedData": "<Base64>" }`. The Base64 payload is laid out as `IV(16 bytes) ‖ AES-GCM ciphertext + authentication tag`.
+- **Inline encryption** embeds the Base64 payload directly in the note using the `encrypt(visible text){<payload>}` format.
 
 ---
 
@@ -112,8 +113,7 @@ All cryptography is performed locally with the Web Crypto API (`crypto.subtle`),
 | Decrypt folder of current note | `meld-encrypt-folder-decrypt` | Bulk-decrypt the current note's folder |
 | Mark / unmark folder of current note | `meld-encrypt-toggle-mark-folder` | Flag / unflag the current note's folder as encrypted (auto-encrypt new notes) |
 | Generate Random Password | `meld-encrypt-generate-password` | Open the random password generator |
-| Clear Session Password Cache | `meld-encrypt-clear-password-cache` | Clear cached passwords for this session |
-| Lock and Close all open encrypted notes | `meld-encrypt-close-and-forget` | Lock every open encrypted note |
+| Reload SSH key | `meld-encrypt-reload-ssh-key` | Re-read `~/.ssh/id_ed25519` |
 
 ---
 
@@ -121,25 +121,34 @@ All cryptography is performed locally with the Web Crypto API (`crypto.subtle`),
 
 | Setting | Description |
 | --- | --- |
-| **Confirm password?** | When enabled, encrypt operations ask you to type the password twice. |
-| **Remember password?** | Cache the last used password so you don't retype it. |
-| **Remember Password** | Shows the current cache lifetime and a slider (0–120 minutes). `0` means the cache is cleared when Obsidian closes. |
+| **SSH key (Ed25519)** | Shows whether the key was loaded (and from where), with a reload button. |
 | **Inline encryption → Expand selection to whole line?** | Partial selections are expanded to the full line before encrypting. |
 | **Inline encryption → Search limit for markers** | How far to look for markers when encrypting/decrypting. |
 | **Inline encryption → By default, show encrypted marker when reading** | Whether inline encryption leaves a visible marker in Reading view. |
-| **Generate random password → Default length** | Default character count for generated passwords. |
-| **Generate random password → Include uppercase (A–Z)** | Include uppercase letters in generated passwords. |
-| **Generate random password → Include lowercase (a–z)** | Include lowercase letters in generated passwords. |
-| **Generate random password → Include numbers (0–9)** | Include digits in generated passwords. |
-| **Generate random password → Include symbols (!@#$...)** | Include symbols in generated passwords. |
+| **Generate random password → …** | Default length and character classes. |
 | **Folder encryption → Recursive by default** | Include sub-folders when the folder dialog opens. |
+
+---
+
+## CLI tools
+
+`mdenc` (build with `npm run build-tool-mdenc`) can list, test and bulk-decrypt encrypted artifacts from the command line using the same SSH key:
+
+```
+mdenc list
+mdenc test                 # verify everything decrypts with ~/.ssh/id_ed25519
+mdenc decrypt --outdir ./out
+mdenc decrypt -k /path/to/id_ed25519 --outdir ./out
+```
+
+An offline browser decrypt page (`decrypt.html` + `offline-decrypt.ts`) lets you load the private key file manually and decrypt single notes without Obsidian.
 
 ---
 
 ## Security Notes
 
 - Encryption is performed locally; no data leaves your device.
-- There is **no password recovery**. Store your passwords safely.
+- Whoever can read your `~/.ssh/id_ed25519` can decrypt everything — protect it accordingly.
 - The plugin relies on the Obsidian/Electron crypto primitives; it has not been independently audited.
 
 ---

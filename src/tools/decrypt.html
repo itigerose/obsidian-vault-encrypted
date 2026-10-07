@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Decrypt Tool for Obsidian Meld Encrypt Plugin</title>
+	<title>Decrypt Tool for Obsidian Vault Encrypted Plugin</title>
 	<script src="offline-decrypt.js"></script>
 	<style>
 		:root{
@@ -32,7 +32,7 @@
 			flex-direction: row;
 			align-items: baseline;
 		}
-		
+
 		label{
 			color: blue;
 			margin-top: 1em;
@@ -48,7 +48,7 @@
 			padding: 0.5em;
 		}
 
-		#pw{
+		#key{
 			margin-right: 1em;
 		}
 
@@ -65,39 +65,58 @@
 <body>
 
 	<div class="row-500">
-		<h1>🔐 Decrypt Tool for Obsidian Meld Encrypt Plugin 🔐</h1>
-		
-		<p>Use this tool to decrypt notes without using the Obsidian Meld Encrypt Plugin.</p>
+		<h1>🔐 Decrypt Tool for Obsidian Vault Encrypted Plugin 🔐</h1>
+
+		<p>Use this tool to decrypt notes without using the Vault Encrypted plugin.</p>
+
+		<label for="key">Private Key File (id_ed25519)</label>
+		<div class="col">
+			<input id="key" type="file">
+			<span id="km"></span>
+		</div>
 
 		<label for="et">Encrypted Text</label>
 		<textarea id="et"></textarea>
-		
-		<label for="pw">Password</label>
+
+		<label for="dt">Decrypted Text</label>
 		<div class="col">
-			<input id="pw" type="password">
 			<button id="btnDecrypt" type="button">🔓 Decrypt</button>
 			<span id="m"></span>
 		</div>
-
-		<label for="dt">Decrypted Text</label>
 		<textarea id="dt" readonly=""></textarea>
 
-		<p class="footnote"><b>Note:</b> As an offline backup, you can save your own copy of this tool.  Right click and choose 'Save link as' for: <a href="decrypt.html" download>this page</a> and the <a href="crypto-helper.js">decryptor code</a></p>
+		<p class="footnote"><b>Note:</b> Your private key file is processed locally in the browser and never uploaded.</p>
 
 	</div>
 
 	<script>
+		let keyLoaded = false;
+
+		document.getElementById('key').onchange = async (ev) => {
+			const file = ev.target.files[0];
+			const km = document.querySelector('#km');
+			if (file == null) { return; }
+			const text = await file.text();
+			keyLoaded = await $.setKeyFile(text);
+			km.innerHTML = keyLoaded ? '🔑 key loaded' : '👎 not a valid unencrypted OpenSSH Ed25519 private key';
+		};
+
 		document.getElementById('btnDecrypt').onclick = (ev) => decryptHandler();
 
 		async function decryptHandler(){
 			const eTextEncrypted = document.querySelector('#et');
-			const ePassword = document.querySelector('#pw');
 			const eTextDecrypted = document.querySelector('#dt');
 			const eMessage = document.querySelector('#m');
-			
+
 			eMessage.innerHTML = '';
-			
-			const result = await $.decrypt(eTextEncrypted.value, ePassword.value);
+
+			if (!keyLoaded){
+				eMessage.innerHTML = '👎 Load your private key file first';
+				eTextDecrypted.value = '';
+				return;
+			}
+
+			const result = await $.decrypt(eTextEncrypted.value);
 
 			if (result ===  null){
 				eMessage.innerHTML = '👎 Decryption failed';

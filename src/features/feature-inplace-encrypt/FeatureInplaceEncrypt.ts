@@ -1,18 +1,18 @@
-import { Editor, EditorPosition, Menu, Notice, Setting, MarkdownPostProcessorContext } from "obsidian";
-import { t } from "../../i18n";
+import { Editor, EditorPosition, Menu, Notice, Setting, MarkdownPostProcessorContext, TFile } from "obsidian";
+import { t, tSshKeyError } from "../../i18n";
 import DecryptModal from "./DecryptModal.ts";
 import { IMeldEncryptPluginFeature } from "../IMeldEncryptPluginFeature.ts";
 import MeldEncrypt from "../../main.ts";
 import { IMeldEncryptPluginSettings } from "../../settings/MeldEncryptPluginSettings.ts";
 import { IFeatureInplaceEncryptSettings } from "./IFeatureInplaceEncryptSettings.ts";
-import PasswordModal from "./PasswordModal.ts";
 import { UiHelper } from "../../services/UiHelper.ts";
-import { SessionPasswordService } from "../../services/SessionPasswordService.ts";
 import { CryptoHelperFactory } from "../../services/CryptoHelperFactory.ts";
+import { ICryptoHelper } from "../../services/ICryptoHelper.ts";
+import { SshKeyService } from "../../services/SshKeyService.ts";
 import { Decryptable } from "./Decryptable.ts";
 import { FeatureInplaceTextAnalysis, parseInlineEncryptFormat } from "./featureInplaceTextAnalysis.ts";
 import { InlineEncryptLivePreview } from "./InlineEncryptLivePreview.ts";
-import { ENCRYPTED_ICON, _HINT, _PREFIXES, _PREFIX_ENCODE_DEFAULT, _PREFIX_ENCODE_DEFAULT_VISIBLE, _SUFFIXES, _SUFFIX_NO_COMMENT, _SUFFIX_WITH_COMMENT, _PREFIX_INLINE_OPEN, _PREFIX_INLINE_CLOSE, _INLINE_CIPHER_OPEN, _INLINE_CIPHER_CLOSE, _INLINE_DEFAULT_VISIBLE } from "./FeatureInplaceConstants.ts";
+import { ENCRYPTED_ICON, _PREFIXES, _SUFFIXES, _PREFIX_INLINE_OPEN, _INLINE_DEFAULT_VISIBLE } from "./FeatureInplaceConstants.ts";
 
 enum EncryptOrDecryptMode{
 	Encrypt = 'encrypt',
@@ -358,6 +358,19 @@ if ( node instanceof Text ){
 	}
 
 	/**
+	 * The crypto helper for a decryptable. Returns null only when the SSH key is
+	 * unavailable — there is no per-version branching, so any ciphertext is
+	 * attempted with the SSH-key helper and a failure surfaces as a decrypt error.
+	 */
+	private async resolveCrypto( decryptable: Decryptable ) {
+		if ( !(await SshKeyService.isAvailable()) ){
+			new Notice(tSshKeyError(SshKeyService.lastErrorMessage), 10000);
+			return null;
+		}
+		return CryptoHelperFactory.BuildDefault();
+	}
+
+	/**
 	 * Reading-view right-click "Decrypt" — removes the encryption: the cipher
 	 * block is replaced in the note with the decrypted plaintext. The user must
 	 * manually re-encrypt afterwards if they want it protected again.
@@ -368,31 +381,17 @@ if ( node instanceof Text ){
 			return;
 		}
 
+		const crypto = await this.resolveCrypto(decryptable);
+		if ( crypto == null ){
+			return;
+		}
+
 		const activeFile = this.plugin.app.workspace.getActiveFile();
 		if ( activeFile == null ){
 			return;
 		}
 
-		// Try session-password first (no prompt) before asking the user.
-		let pw: string | null | undefined = null;
-		const markerIndex = await this.inlineMarkerIndexFromMarker(path, fullMarker);
-		const cached = await SessionPasswordService.getByPathAsync(path, markerIndex);
-		if ( cached.password != null ){
-			const crypto0 = CryptoHelperFactory.BuildFromDecryptableOrThrow( decryptable );
-			const tryText = await crypto0.decryptFromBase64( decryptable.base64CipherText, cached.password );
-			if ( tryText !== null ){
-				pw = cached.password;
-			}
-		}
-		if ( pw == null ){
-			pw = await this.fetchPasswordFromUser( decryptable.hint );
-		}
-		if ( pw == null ){
-			return;
-		}
-
-		const crypto = CryptoHelperFactory.BuildFromDecryptableOrThrow( decryptable );
-		const decryptedText = await crypto.decryptFromBase64( decryptable.base64CipherText, pw );
+		const decryptedText = await crypto.decryptFromBase64( decryptable.base64CipherText );
 		if ( decryptedText === null ){
 			new Notice(t("notice.decryptionFailed"));
 			return;
@@ -404,8 +403,6 @@ if ( node instanceof Text ){
 		} );
 
 		new Notice(t("notice.noteDecrypted"));
-		// The cipher block is gone from the note — drop the cached password too.
-		SessionPasswordService.clearForPath( path, markerIndex );
 	}
 
 	private async handleReadingIndicatorClick( path: string, decryptable?:Decryptable, fullMarker?:string ){
@@ -415,37 +412,23 @@ if ( node instanceof Text ){
 			return;
 		}
 
-		const markerIndex = await this.inlineMarkerIndexFromMarker(path, fullMarker);
-		if ( await this.showDecryptedTextIfPasswordKnown( path, decryptable, fullMarker, markerIndex ) ){
+		const crypto = await this.resolveCrypto(decryptable);
+		if ( crypto == null ){
 			return;
 		}
 
-		const pw = await this.fetchPasswordFromUser( decryptable.hint );
-
-		if ( pw == null ){
-			return;
-		}
-
-		// decrypt
-		if ( await this.showDecryptedResultForPassword( path, decryptable, pw, fullMarker ) ){
-			SessionPasswordService.putByPath(
-				{
-					password: pw,
-					hint: decryptable.hint
-				},
-				path,
-				markerIndex
-			);
-		}else{
+		if ( !await this.showDecryptedResult( path, crypto, decryptable, fullMarker ) ){
 			new Notice(t("notice.decryptionFailed"));
 		}
-
 	}
 
-	private async showDecryptedResultForPassword( sourcePath: string, decryptable: Decryptable, pw:string, fullMarker?:string ): Promise<boolean> {
-		const crypto =  CryptoHelperFactory.BuildFromDecryptableOrThrow( decryptable );
-
-		const decryptedText = await crypto.decryptFromBase64( decryptable.base64CipherText, pw );
+	private async showDecryptedResult(
+		sourcePath: string,
+		crypto: ICryptoHelper,
+		decryptable: Decryptable,
+		fullMarker?:string
+	): Promise<boolean> {
+		const decryptedText = await crypto.decryptFromBase64( decryptable.base64CipherText );
 
 		// show result
 		if (decryptedText === null) {
@@ -456,15 +439,15 @@ if ( node instanceof Text ){
 			const decryptModal = new DecryptModal(this.plugin.app, '🔓', decryptedText );
 			decryptModal.canDecryptInPlace = false;
 			decryptModal.onClose = async () =>{
-				// "修改" (previously "保存") button: re-encrypt the (possibly edited)
-				// plaintext with the same password and write it back over the cipher block.
-				if ( decryptModal.save && fullMarker != null && sourcePath != null ){
+				// "修改" button: re-encrypt the (possibly edited) plaintext and
+				// write it back over the cipher block.
+				if ( decryptModal.save && fullMarker != null && fullMarker.length > 0 ){
 					try {
 						const crypto2 = CryptoHelperFactory.BuildDefault();
 						const reEncoded = this.encodeEncryption(
-							await crypto2.encryptToBase64(decryptModal.text, pw),
-							decryptable.hint ?? "",
-							decryptable.showInReadingView
+							await crypto2.encryptToBase64(decryptModal.text),
+							decryptable.showInReadingView,
+							decryptable.visibleText
 						);
 						const file = this.plugin.app.vault.getAbstractFileByPath(sourcePath);
 						if ( file != null ){
@@ -481,43 +464,6 @@ if ( node instanceof Text ){
 			}
 			decryptModal.open();
 		} )
-
-
-	}
-
-	private async fetchPasswordFromUser( hint:string ): Promise<string|null|undefined> {
-		// fetch password
-		return new Promise<string|null|undefined>( (resolve) => {
-			const pwModal = new PasswordModal(
-				this.plugin.app,
-				/*isEncrypting*/ false,
-				/*confirmPassword*/ false,
-				'',
-				hint
-			);
-
-			pwModal.onClose = () =>{
-				resolve( pwModal.resultPassword );
-			}
-
-			pwModal.open();
-
-
-		} );
-	}
-
-	private async showDecryptedTextIfPasswordKnown( filePath: string, decryptable: Decryptable, fullMarker?:string, markerIndex: number = 0 ) : Promise<boolean> {
-		const bestGuessPasswordAndHint = await SessionPasswordService.getByPathAsync(filePath, markerIndex);
-		if ( bestGuessPasswordAndHint.password == null ){
-			return false;
-		}
-
-		return await this.showDecryptedResultForPassword(
-			filePath,
-			decryptable,
-			bestGuessPasswordAndHint.password,
-			fullMarker
-		);
 	}
 
 	public buildSettingsUi(
@@ -576,68 +522,6 @@ if ( node instanceof Text ){
 		;
 	}
 
-	/**
-	 * Compute the 0-based position (order) of an inline marker within the note,
-	 * counting every marker (both the new `encrypt(显示){密文}` format and the
-	 * legacy `🔐…` format) from the start of the file. This order is what the
-	 * remembered-password cache keys on, so the Nth marker in a file always
-	 * maps to the same stored password regardless of how many edits happened.
-	 */
-	private computeInlineMarkerIndex(content: string, markerStartOffset: number): number {
-		const offsets: number[] = [];
-
-		// new inline format
-		let idx = content.indexOf(_PREFIX_INLINE_OPEN);
-		while (idx >= 0) {
-			offsets.push(idx);
-			idx = content.indexOf(_PREFIX_INLINE_OPEN, idx + 1);
-		}
-
-		// legacy format prefixes
-		for (const p of _PREFIXES) {
-			let i = content.indexOf(p);
-			while (i >= 0) {
-				offsets.push(i);
-				i = content.indexOf(p, i + 1);
-			}
-		}
-
-		const unique = Array.from(new Set(offsets)).sort((a, b) => a - b);
-		let index = 0;
-		for (const o of unique) {
-			if (o <= markerStartOffset) {
-				index++;
-			} else {
-				break;
-			}
-		}
-		return index;
-	}
-
-	/** Marker order for a marker whose full on-disk string is known. */
-	private async inlineMarkerIndexFromMarker(
-		path: string,
-		fullMarker: string | undefined
-	): Promise<number> {
-		if (fullMarker == null || fullMarker.length === 0) {
-			return 0;
-		}
-		const activeFile = this.plugin.app.workspace.getActiveFile();
-		const content = activeFile != null ? await this.plugin.app.vault.read(activeFile) : '';
-		const markerOffset = content.indexOf(fullMarker);
-		if (markerOffset < 0) {
-			return 0;
-		}
-		return this.computeInlineMarkerIndex(content, markerOffset);
-	}
-
-	/** Marker order for a marker located at an editor position. */
-	private inlineMarkerIndexFromEditor(editor: Editor, pos: CodeMirror.Position): number {
-		const content = editor.getValue();
-		const offset = editor.posToOffset(pos);
-		return this.computeInlineMarkerIndex(content, offset);
-	}
-
 	private processEncryptCommand(
 		checking: boolean,
 		editor: Editor
@@ -688,9 +572,9 @@ if ( node instanceof Text ){
 				// the end position is within the encrypted text, so we do not encrypt
 				return false;
 			}
-			
+
 		}
-			
+
 		// get selection to encrypt
 		const selectionText = editor.getRange(startPos, endPos);
 
@@ -698,16 +582,12 @@ if ( node instanceof Text ){
 		if ( selectionText.includes( ENCRYPTED_ICON ) || selectionText.includes( _PREFIX_INLINE_OPEN ) ){
 			return false; // do not encrypt within encrypted text
 		}
-		
-		// Encrypt selected text
+
 		if ( selectionText.length === 0 ){
-			// prompt to encrypt text
-			// selection is empty, prompt for text to encrypt
-			return checking || this.promptForTextToEncrypt(
-				checking,
-				editor,
-				startPos
-			);
+			if (!checking){
+				new Notice(t("notice.pleaseSelectTextToEncrypt"));
+			}
+			return false;
 		}
 
 		return this.processSelection(
@@ -753,7 +633,6 @@ if ( node instanceof Text ){
 
 		if ( nothingSelected ){
 			// nothing selected, first assume user wants to decrypt, expand to start and end markers...
-			// but if no markers found then prompt to encrypt text
 			const foundStartPos = this.getClosestPrefixCursorPos( editor, startPos );
 			const foundEndPos = this.getClosestSuffixCursorPos( editor, startPos );
 
@@ -854,33 +733,17 @@ if ( node instanceof Text ){
 	}
 
 	private async decryptFromDomContext( ctx: DomDecryptContext ) {
+		const crypto = await this.resolveCrypto(ctx.decryptable);
+		if ( crypto == null ){
+			return;
+		}
+
 		const activeFile = this.plugin.app.workspace.getActiveFile();
 		if ( activeFile == null ){
 			return;
 		}
 
-		// Try session password first (no prompt) before asking the user.
-		let pw: string | null | undefined = null;
-		const markerIndex = await this.inlineMarkerIndexFromMarker(activeFile.path, ctx.fullMarker);
-		const cached = await SessionPasswordService.getByPathAsync(activeFile.path, markerIndex);
-		if ( cached.password != null ){
-			const cryptoTry = CryptoHelperFactory.BuildFromDecryptableOrThrow( ctx.decryptable );
-			const tryText = await cryptoTry.decryptFromBase64( ctx.decryptable.base64CipherText, cached.password );
-			if ( tryText !== null ){
-				pw = cached.password;
-			}
-		}
-
-		if ( pw == null ){
-			pw = await this.fetchPasswordFromUser( ctx.decryptable.hint ?? '' );
-		}
-
-		if ( pw == null ){
-			return;
-		}
-
-		const crypto = CryptoHelperFactory.BuildFromDecryptableOrThrow( ctx.decryptable );
-		const decryptedText = await crypto.decryptFromBase64( ctx.decryptable.base64CipherText, pw );
+		const decryptedText = await crypto.decryptFromBase64( ctx.decryptable.base64CipherText );
 		if ( decryptedText === null ){
 			new Notice(t("notice.decryptionFailed"));
 			return;
@@ -891,84 +754,10 @@ if ( node instanceof Text ){
 		});
 
 		new Notice(t("notice.noteDecrypted"));
-		// The cipher block is gone from the note — drop the cached password too.
-		SessionPasswordService.clearForPath( activeFile.path, markerIndex );
-	}
-
-	private promptForTextToEncrypt(
-		checking: boolean,
-		editor: Editor,
-		pos: CodeMirror.Position
-	) : boolean {
-
-		// show dialog with password, confirmation, hint and text
-		// insert into editor at pos
-
-		const activeFile = this.plugin.app.workspace.getActiveFile();
-		if (activeFile == null){
-			return false;
-		}
-		
-		if (checking) {
-			return true;
-		}
-
-		// Fetch password from user
-
-		// determine default password and hint
-		let defaultPassword = '';
-		let defaultHint = '';
-		if ( this.pluginSettings.rememberPassword ){
-			const bestGuessPasswordAndHint = SessionPasswordService.getByPath( activeFile.path, 0 );
-
-			defaultPassword = bestGuessPasswordAndHint.password;
-			defaultHint = bestGuessPasswordAndHint.hint;
-		}
-
-		const confirmPassword = this.pluginSettings.confirmPassword;
-
-		const pwModal = new PasswordModal(
-			this.plugin.app,
-			true,
-			confirmPassword,
-			defaultPassword,
-			defaultHint,
-			/*showTextToEncrypt*/ true
-		);
-		pwModal.onClose = async () => {
-			if ( !pwModal.resultConfirmed ){
-				return;
-			}
-			const pw = pwModal.resultPassword ?? ''
-			const hint = pwModal.resultHint ?? '';
-			const textToEncrypt = pwModal.resultTextToEncrypt ?? '';
-			const visibleText = pwModal.resultVisibleText ?? '';
-
-			const encryptable = new Encryptable();
-			encryptable.text = textToEncrypt;
-			encryptable.hint = hint;
-			encryptable.visibleText = visibleText;
-
-			this.encryptSelection(
-				editor,
-				encryptable,
-				pw,
-				pos,
-				pos,
-				this.featureSettings.showMarkerWhenReadingDefault
-			);
-
-			// remember password — keyed to the new marker's position in the file
-			const markerIndex = this.inlineMarkerIndexFromEditor(editor, pos);
-			SessionPasswordService.putByPath( { password:pw, hint: hint }, activeFile.path, markerIndex );
-		}
-		pwModal.open();
-
-		return false;
 	}
 
 	private getClosestPrefixCursorPos( editor: Editor, fromEditorPosition: EditorPosition ): EditorPosition | null{
-		
+
 		const maxLookback = this.featureSettings.markerSearchLimit;
 
 		const maxLengthPrefix = _PREFIXES.reduce((prev,cur, i) => {
@@ -985,7 +774,7 @@ if ( node instanceof Text ){
 			for (const prefix of _PREFIXES) {
 				const prefixStartOffset = offset - prefix.length;
 				const prefixStartPos = editor.offsetToPos(prefixStartOffset);
-			
+
 				const testText = editor.getRange( prefixStartPos, offsetPos );
 
 				if (testText == prefix){
@@ -1006,7 +795,7 @@ if ( node instanceof Text ){
 			if ( cur.length > prev.length ) return cur;
 			return prev;
 		} );
-		
+
 		const initOffset = editor.posToOffset( fromEditorPosition ) - maxLengthPrefix.length + 1;
 		const lastLineNum = editor.lastLine();
 
@@ -1014,18 +803,18 @@ if ( node instanceof Text ){
 
 		for (let offset = initOffset; offset <= maxOffset; offset++) {
 			const offsetPos = editor.offsetToPos(offset);
-			for (const suffix of _SUFFIXES) {	
+			for (const suffix of _SUFFIXES) {
 				const textEndOffset = offset + suffix.length;
 				const textEndPos = editor.offsetToPos(textEndOffset);
-				
+
 				const testText = editor.getRange( offsetPos, textEndPos );
-				
+
 				if (testText == suffix){
 					return textEndPos;
 				}
 			}
 		}
-		
+
 		return null;
 	}
 
@@ -1069,94 +858,43 @@ if ( node instanceof Text ){
 			return true;
 		}
 
-		
-		// Fetch password from user
-
-		// determine default password and hint
-		let defaultPassword = '';
-		let defaultHint = selectionAnalysis.decryptable?.hint;
-		if ( this.pluginSettings.rememberPassword ){
-			const bestGuessPasswordAndHint = SessionPasswordService.getByPath( activeFile.path, 0 );
-
-			defaultPassword = bestGuessPasswordAndHint.password;
-			defaultHint = defaultHint ?? bestGuessPasswordAndHint.hint;
+		if (selectionAnalysis.canEncrypt) {
+			void this.encryptSelection(
+				editor,
+				selectionText,
+				finalSelectionStart,
+				finalSelectionEnd,
+				this.featureSettings.showMarkerWhenReadingDefault
+			);
+		} else if ( selectionAnalysis.decryptable ) {
+			void this.decryptSelection(
+				editor,
+				activeFile,
+				selectionAnalysis.decryptable,
+				finalSelectionStart,
+				finalSelectionEnd,
+			);
 		}
-
-		const confirmPassword = selectionAnalysis.canEncrypt && this.pluginSettings.confirmPassword;
-
-		const pwModal = new PasswordModal(
-			this.plugin.app,
-			selectionAnalysis.canEncrypt,
-			confirmPassword,
-			defaultPassword,
-			defaultHint
-		);
-
-		pwModal.onClose = async () => {
-			if ( !pwModal.resultConfirmed ){
-				return;
-			}
-			const pw = pwModal.resultPassword ?? ''
-			const hint = pwModal.resultHint ?? '';
-
-			if (selectionAnalysis.canEncrypt) {
-
-				const encryptable = new Encryptable();
-				encryptable.text = selectionText;
-				encryptable.hint = hint;
-				encryptable.visibleText = pwModal.resultVisibleText ?? '';
-
-				this.encryptSelection(
-					editor,
-					encryptable,
-					pw,
-					finalSelectionStart,
-					finalSelectionEnd,
-					this.featureSettings.showMarkerWhenReadingDefault
-				);
-
-				// remember password — keyed to the new marker's position in the file
-				const encryptIndex = this.inlineMarkerIndexFromEditor(editor, finalSelectionStart);
-				SessionPasswordService.putByPath( { password:pw, hint: hint }, activeFile.path, encryptIndex );
-
-			} else if ( selectionAnalysis.decryptable ) {
-
-				const decryptSuccess = await this.decryptSelection(
-					editor,
-					selectionAnalysis.decryptable,
-					pw,
-					finalSelectionStart,
-					finalSelectionEnd,
-				);
-
-				// remember password?
-				if ( decryptSuccess ) {
-					const decryptIndex = this.inlineMarkerIndexFromEditor(editor, finalSelectionStart);
-					SessionPasswordService.putByPath( { password:pw, hint: hint }, activeFile.path, decryptIndex );
-				}
-				
-			}
-		}
-		pwModal.open();
 
 		return true;
 	}
 
 	private async encryptSelection(
 		editor: Editor,
-		encryptable: Encryptable,
-		password: string,
+		textToEncrypt: string,
 		finalSelectionStart: CodeMirror.Position,
 		finalSelectionEnd: CodeMirror.Position,
 		showInReadingView: boolean
 	) {
-		//encrypt
 		const crypto = CryptoHelperFactory.BuildDefault();
+		if ( !(await SshKeyService.isAvailable()) ){
+			new Notice(tSshKeyError(SshKeyService.lastErrorMessage), 10000);
+			return;
+		}
+
 		const encodedText = this.encodeEncryption(
-			await crypto.encryptToBase64(encryptable.text, password),
-			encryptable.hint,
-			showInReadingView,
-			encryptable.visibleText
+			await crypto.encryptToBase64(textToEncrypt),
+			showInReadingView
 		);
 		editor.setSelection(finalSelectionStart, finalSelectionEnd);
 		editor.replaceSelection(encodedText);
@@ -1164,58 +902,52 @@ if ( node instanceof Text ){
 
 	private async decryptSelection(
 		editor: Editor,
+		activeFile: TFile,
 		decryptable: Decryptable,
-		password: string,
 		selectionStart: CodeMirror.Position,
 		selectionEnd: CodeMirror.Position
 	) : Promise<boolean> {
 
-		// decrypt
+		const crypto = await this.resolveCrypto(decryptable);
+		if ( crypto == null ){
+			return false;
+		}
 
-		const crypto = CryptoHelperFactory.BuildFromDecryptableOrThrow(decryptable);
-		const decryptedText = await crypto.decryptFromBase64(decryptable.base64CipherText, password);
+		const decryptedText = await crypto.decryptFromBase64(decryptable.base64CipherText);
 		if (decryptedText === null) {
 			new Notice(t("notice.decryptionFailed"));
 			return false;
-		} else {
-
-			const decryptModal = new DecryptModal(this.plugin.app, '🔓', decryptedText );
-			decryptModal.onClose = async () => {
-				editor.focus();
-				if (decryptModal.decryptInPlace) {
-					editor.setSelection(selectionStart, selectionEnd);
-					editor.replaceSelection(decryptModal.text);
-				} else if (decryptModal.save) {
-					const crypto = CryptoHelperFactory.BuildDefault();
-					const encodedText = this.encodeEncryption(
-						await crypto.encryptToBase64(decryptModal.text, password),
-						decryptable.hint ?? "",
-						decryptable.showInReadingView
-					);
-					editor.setSelection(selectionStart, selectionEnd);
-					editor.replaceSelection(encodedText);
-				}
-			}
-			decryptModal.open();
-
 		}
+
+		const decryptModal = new DecryptModal(this.plugin.app, '🔓', decryptedText );
+		decryptModal.onClose = async () => {
+			editor.focus();
+			if (decryptModal.decryptInPlace) {
+				editor.setSelection(selectionStart, selectionEnd);
+				editor.replaceSelection(decryptModal.text);
+			} else if (decryptModal.save) {
+				const crypto2 = CryptoHelperFactory.BuildDefault();
+				const encodedText = this.encodeEncryption(
+					await crypto2.encryptToBase64(decryptModal.text),
+					decryptable.showInReadingView,
+					decryptable.visibleText
+				);
+				editor.setSelection(selectionStart, selectionEnd);
+				editor.replaceSelection(encodedText);
+			}
+		};
+		decryptModal.open();
 		return true;
 	}
 
-	private encodeEncryption( encryptedText: string, hint: string, showInReadingView: boolean, visibleText?: string ): string {
+	private encodeEncryption( encryptedText: string, showInReadingView: boolean, visibleText?: string ): string {
 		// New inline format: encrypt(显示内容){加密内容}
 		const visible = (visibleText && visibleText.length > 0) ? visibleText : _INLINE_DEFAULT_VISIBLE;
 		return _PREFIX_INLINE_OPEN
 			+ visible
-			+ _PREFIX_INLINE_CLOSE
-			+ _INLINE_CIPHER_OPEN
+			+ ')'
+			+ '{'
 			+ encryptedText
-			+ _INLINE_CIPHER_CLOSE;
+			+ '}';
 	}
-}
-
-class Encryptable{
-	text:string;
-	hint:string;
-	visibleText?:string;
 }

@@ -3,7 +3,6 @@ import MeldEncrypt from "../../main.ts";
 import { t } from "../../i18n";
 import { ENCRYPTED_FILE_EXTENSIONS, ENCRYPTED_FILE_EXTENSION_DEFAULT } from "../../services/Constants.ts";
 import { FileEncryptHelper } from "../../services/FileEncryptHelper.ts";
-import { PasswordAndHint } from "../../services/SessionPasswordService.ts";
 
 export interface IFolderBulkResult {
 	succeeded: number;
@@ -19,6 +18,7 @@ export type FolderBulkProgressCallback = (result: IFolderBulkResult, done: numbe
  *
  * Shared by the folder encrypt dialog, the "mark folder" dialog and the
  * context-menu action for encrypting notes that predate the mark.
+ * All cryptography uses the local OpenSSH Ed25519 key.
  */
 export class FolderBulkService {
 
@@ -61,19 +61,17 @@ export class FolderBulkService {
 		plugin: MeldEncrypt,
 		folder: TFolder,
 		recursive: boolean,
-		passwordAndHint: PasswordAndHint,
 		onProgress?: FolderBulkProgressCallback
 	): Promise<IFolderBulkResult> {
 		return await FolderBulkService.run(
 			FolderBulkService.collectPlainNotes(folder, recursive),
 			async file => {
-				const encryptedContent = await FileEncryptHelper.encryptFile(plugin, file, passwordAndHint);
-				await FileEncryptHelper.closeUpdateRememberPasswordThenReopen(
+				const encryptedContent = await FileEncryptHelper.encryptFile(plugin, file);
+				await FileEncryptHelper.closeUpdateThenReopen(
 					plugin,
 					file,
 					ENCRYPTED_FILE_EXTENSION_DEFAULT,
-					encryptedContent,
-					passwordAndHint
+					encryptedContent
 				);
 			},
 			onProgress
@@ -84,23 +82,20 @@ export class FolderBulkService {
 		plugin: MeldEncrypt,
 		folder: TFolder,
 		recursive: boolean,
-		passwordAndHint: PasswordAndHint,
 		onProgress?: FolderBulkProgressCallback
 	): Promise<IFolderBulkResult> {
 		return await FolderBulkService.run(
 			FolderBulkService.collectEncryptedNotes(folder, recursive),
 			async file => {
-				const content = await FileEncryptHelper.decryptFile(plugin, file, passwordAndHint.password);
+				const content = await FileEncryptHelper.decryptFile(plugin, file);
 				if (content == null) {
 					throw new Error(t("error.decryptionFailed"));
 				}
-				await FileEncryptHelper.closeUpdateRememberPasswordThenReopen(
+				await FileEncryptHelper.closeUpdateThenReopen(
 					plugin,
 					file,
 					"md",
-					content,
-					passwordAndHint,
-					false
+					content
 				);
 			},
 			onProgress
